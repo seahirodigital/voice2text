@@ -1,0 +1,78 @@
+@import "tailwindcss";
+
+:root {
+  font-family:
+    "SF Pro JP",
+    "SF Pro Text",
+    "SF Pro Icons",
+    "Hiragino Kaku Gothic Pro",
+    "ヒラギノ角ゴ Pro W3",
+    "メイリオ",
+    Meiryo,
+    "Helvetica Neue",
+    Helvetica,
+    Arial,
+    sans-serif;
+  color: #1d1d1f;
+  background: #fff;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-width: 320px;
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  letter-spacing: -0.357px;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.field-label {
+  display: block;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: rgba(0, 0, 0, 0.46);
+}
+
+.field-input {
+  width: 100%;
+  min-height: 3rem;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 999px;
+  background: rgba(245, 245, 247, 0.95);
+  color: #1d1d1f;
+  padding: 0.8rem 1rem;
+  outline: none;
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    background 160ms ease;
+}
+
+.field-input:focus {
+  border-color: rgba(0, 113, 227, 0.24);
+  background: #fff;
+  box-shadow: 0 0 0 4px rgba(0, 113, 227, 0.1);
+}

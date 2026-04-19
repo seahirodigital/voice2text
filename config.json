@@ -1,0 +1,28 @@
+{
+  "paths": {
+    "modelsRoot": "%LOCALAPPDATA%\\Voice2Text\\models",
+    "dataRoot": "%LOCALAPPDATA%\\Voice2Text\\data",
+    "tempRecordingsRoot": "%LOCALAPPDATA%\\Voice2Text\\temp_recordings",
+    "frontendDist": "frontend/dist"
+  },
+  "transcription": {
+    "language": "ja",
+    "modelPreset": "tiny",
+    "maxSpeakers": 3,
+    "updateIntervalMs": 400,
+    "enableWordTimestamps": false
+  },
+  "apiSettings": {
+    "systemPrompt": "",
+    "providers": {
+      "openai": {
+        "apiKey": "",
+        "model": ""
+      },
+      "anthropic": {
+        "apiKey": "",
+        "model": ""
+      }
+    }
+  }
+}

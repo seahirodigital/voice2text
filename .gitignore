@@ -1,0 +1,11 @@
+frontend/node_modules/
+frontend/dist/
+backend/__pycache__/
+backend/.pytest_cache/
+backend/.mypy_cache/
+*.pyc
+*.pyo
+*.pyd
+tmp-*.log
+tmp-*.err.log
+.pytest_cache/
