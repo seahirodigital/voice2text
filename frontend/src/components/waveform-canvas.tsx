@@ -1,11 +1,25 @@
 import { useEffect, useRef } from "react";
 
+import { cn } from "../lib/utils";
+import type { RecordingStatus } from "../types";
+
 interface WaveformCanvasProps {
   samples: number[];
-  status: "idle" | "recording" | "paused" | "saving" | "connecting" | "error";
+  status: RecordingStatus;
+  className?: string;
+  width?: number;
+  height?: number;
+  background?: string;
 }
 
-export function WaveformCanvas({ samples, status }: WaveformCanvasProps) {
+export function WaveformCanvas({
+  samples,
+  status,
+  className,
+  width = 880,
+  height = 180,
+  background = "rgba(255,255,255,0.88)",
+}: WaveformCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
@@ -19,8 +33,8 @@ export function WaveformCanvas({ samples, status }: WaveformCanvasProps) {
       return;
     }
 
-    const { width, height } = canvas;
-    context.clearRect(0, 0, width, height);
+    const { width: canvasWidth, height: canvasHeight } = canvas;
+    context.clearRect(0, 0, canvasWidth, canvasHeight);
 
     const bars = 48;
     const step = Math.max(1, Math.floor(samples.length / bars));
@@ -29,10 +43,12 @@ export function WaveformCanvas({ samples, status }: WaveformCanvasProps) {
         ? "rgba(0, 113, 227, 0.95)"
         : status === "paused"
           ? "rgba(29, 29, 31, 0.28)"
-          : "rgba(29, 29, 31, 0.14)";
+          : status === "error"
+            ? "rgba(225, 29, 72, 0.68)"
+            : "rgba(29, 29, 31, 0.14)";
 
-    context.fillStyle = "rgba(255,255,255,0.85)";
-    context.fillRect(0, 0, width, height);
+    context.fillStyle = background;
+    context.fillRect(0, 0, canvasWidth, canvasHeight);
 
     for (let index = 0; index < bars; index += 1) {
       const start = index * step;
@@ -41,24 +57,27 @@ export function WaveformCanvas({ samples, status }: WaveformCanvasProps) {
         chunk.length === 0
           ? 0
           : chunk.reduce((sum, value) => sum + Math.abs(value), 0) / chunk.length;
-      const barHeight = Math.max(12, average * height * 1.9);
-      const x = (width / bars) * index + 2;
-      const y = (height - barHeight) / 2;
-      const w = width / bars - 6;
+      const barHeight = Math.max(
+        Math.max(4, canvasHeight * 0.16),
+        average * canvasHeight * 1.9,
+      );
+      const x = (canvasWidth / bars) * index + 2;
+      const y = (canvasHeight - barHeight) / 2;
+      const w = canvasWidth / bars - 6;
 
       context.fillStyle = baseColor;
       context.beginPath();
       context.roundRect(x, y, w, barHeight, 999);
       context.fill();
     }
-  }, [samples, status]);
+  }, [background, height, samples, status, width]);
 
   return (
     <canvas
       ref={canvasRef}
-      width={880}
-      height={180}
-      className="h-[180px] w-full rounded-[28px] bg-white/80"
+      width={width}
+      height={height}
+      className={cn("h-[180px] w-full rounded-[28px] bg-white/80", className)}
     />
   );
 }

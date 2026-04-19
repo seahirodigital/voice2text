@@ -2,18 +2,14 @@
 
 :root {
   font-family:
-    "SF Pro JP",
+    "Inter",
     "SF Pro Text",
-    "SF Pro Icons",
-    "Hiragino Kaku Gothic Pro",
-    "ヒラギノ角ゴ Pro W3",
-    "メイリオ",
-    Meiryo,
+    "Segoe UI",
     "Helvetica Neue",
     Helvetica,
     Arial,
     sans-serif;
-  color: #1d1d1f;
+  color: #111827;
   background: #fff;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -33,7 +29,9 @@ html {
 body {
   margin: 0;
   min-height: 100vh;
-  letter-spacing: -0.357px;
+  overflow: hidden;
+  letter-spacing: -0.015em;
+  background: #fff;
 }
 
 button,
@@ -49,21 +47,21 @@ select {
 
 .field-label {
   display: block;
-  font-size: 0.72rem;
+  font-size: 0.68rem;
   font-weight: 600;
-  letter-spacing: 0.18em;
+  letter-spacing: 0.22em;
   text-transform: uppercase;
-  color: rgba(0, 0, 0, 0.46);
+  color: rgb(148 163 184);
 }
 
 .field-input {
   width: 100%;
-  min-height: 3rem;
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  border-radius: 999px;
-  background: rgba(245, 245, 247, 0.95);
-  color: #1d1d1f;
-  padding: 0.8rem 1rem;
+  min-height: 2.75rem;
+  border: 1px solid rgb(226 232 240);
+  border-radius: 0.9rem;
+  background: #fff;
+  color: #0f172a;
+  padding: 0.7rem 0.95rem;
   outline: none;
   transition:
     border-color 160ms ease,
@@ -72,7 +70,35 @@ select {
 }
 
 .field-input:focus {
-  border-color: rgba(0, 113, 227, 0.24);
+  border-color: rgba(0, 122, 255, 0.38);
   background: #fff;
-  box-shadow: 0 0 0 4px rgba(0, 113, 227, 0.1);
+  box-shadow: 0 0 0 4px rgba(0, 122, 255, 0.1);
+}
+
+.app-mono {
+  font-family:
+    "JetBrains Mono",
+    "SFMono-Regular",
+    Consolas,
+    "Liberation Mono",
+    Menlo,
+    monospace;
+}
+
+.app-scrollbar::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+.app-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.app-scrollbar::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.5);
+}
+
+.app-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.6);
 }
