@@ -13,6 +13,7 @@ import {
   RefreshCcw,
   Save,
   Search,
+  Square,
   Settings2,
   Share2,
   SlidersHorizontal,
@@ -26,6 +27,7 @@ import {
   useRef,
   useState,
 } from "react";
+import type { MouseEvent } from "react";
 
 import { WaveformCanvas } from "./components/waveform-canvas";
 import { Button } from "./components/ui/button";
@@ -47,7 +49,7 @@ const MIN_UPDATE_INTERVAL_MS = 100;
 const MAX_UPDATE_INTERVAL_MS = 5000;
 const SEGMENT_AUDIO_PREROLL_SECONDS = 0.2;
 const TRANSCRIPT_GRID_CLASS =
-  "lg:grid lg:grid-cols-[58px_132px_minmax(0,1fr)] lg:gap-4";
+  "lg:grid lg:grid-cols-[88px_132px_minmax(0,1fr)] lg:gap-4";
 
 const LANGUAGE_LABELS: Record<string, string> = {
   ja: "Japanese",
@@ -81,6 +83,12 @@ interface RecordView {
   summary: string;
   badgeLabel: string;
   kind: "history" | "live";
+}
+
+interface SidebarContextMenuState {
+  recordId: string;
+  x: number;
+  y: number;
 }
 
 function buildSocketUrl() {
@@ -303,6 +311,11 @@ function App() {
   const [editVersion, setEditVersion] = useState(0);
   const [recordFilter, setRecordFilter] = useState("");
   const [updateIntervalDraft, setUpdateIntervalDraft] = useState("");
+  const [sidebarSelectedRecordIds, setSidebarSelectedRecordIds] = useState<string[]>(
+    [],
+  );
+  const [sidebarContextMenu, setSidebarContextMenu] =
+    useState<SidebarContextMenuState | null>(null);
   const [historySortOrder, setHistorySortOrder] = useState<"newest" | "oldest">(
     "newest",
   );
@@ -336,6 +349,7 @@ function App() {
   const lastLiveSegmentIdRef = useRef<string | null>(null);
   const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
   const speakerNameOverridesRef = useRef<Map<number, string>>(new Map());
+  const lastSidebarSelectedRecordIdRef = useRef<string | null>(null);
   const statusRef = useRef<RecordingStatus>("idle");
   const isLiveSessionRef = useRef(false);
   const pendingLiveTitleRef = useRef<string | null>(null);
@@ -1017,9 +1031,29 @@ function App() {
   };
 
   const deleteSession = async (sessionId: string) => {
-    await fetch(`/api/sessions/${sessionId}`, { method: "DELETE" });
+    await deleteSessions([sessionId]);
+  };
+
+  const deleteSessions = async (sessionIds: string[]) => {
+    const uniqueIds = [...new Set(sessionIds)];
+    if (uniqueIds.length === 0) {
+      return;
+    }
+
+    await Promise.all(
+      uniqueIds.map((sessionId) =>
+        apiFetch<{ deleted: boolean }>(`/api/sessions/${sessionId}`, {
+          method: "DELETE",
+        }),
+      ),
+    );
+
+    setSidebarSelectedRecordIds((current) =>
+      current.filter((sessionId) => !uniqueIds.includes(sessionId)),
+    );
+
     const sessions = await refreshHistory();
-    if (selectedSessionId === sessionId) {
+    if (selectedSessionId && uniqueIds.includes(selectedSessionId)) {
       const fallback = sessions[0];
       if (fallback) {
         await loadSession(fallback.id);
@@ -1054,6 +1088,14 @@ function App() {
 
     const nextLabel = normalizeSpeakerName(requestedName, currentLabel);
     speakerNameOverridesRef.current.set(speakerIndex, nextLabel);
+    const affectedSegmentIds = timelineSegmentsRef.current
+      .filter((segment) => segment.speakerIndex === speakerIndex)
+      .map((segment) => segment.id);
+    if (statusRef.current === "idle" && selectedSessionId) {
+      affectedSegmentIds.forEach((segmentId) => {
+        dirtySegmentIdsRef.current.add(segmentId);
+      });
+    }
     setTimelineSegments((current) =>
       current.map((segment) =>
         segment.speakerIndex === speakerIndex
@@ -1099,6 +1141,15 @@ function App() {
     } finally {
       setOpeningRecordingId((current) => (current === sessionId ? null : current));
     }
+  };
+
+  const toggleSidebarRecordSelection = (sessionId: string) => {
+    lastSidebarSelectedRecordIdRef.current = sessionId;
+    setSidebarSelectedRecordIds((current) =>
+      current.includes(sessionId)
+        ? current.filter((entry) => entry !== sessionId)
+        : [...current, sessionId],
+    );
   };
 
   const updateDraftSettings = (updater: (current: AppSettings) => AppSettings) => {
@@ -1153,6 +1204,103 @@ function App() {
   const showAudioPlayer = Boolean(currentAudioUrl && status === "idle");
   const canDeleteSelectedSession = Boolean(selectedSessionId && !hasActiveCapture);
   const activeTitle = activeRecord?.title ?? "Voice2Text Workspace";
+  const sidebarHistoryRecordMap = new Map(
+    historyRecords.map((record) => [record.id, record] as const),
+  );
+  const validSidebarSelectedRecordIds = sidebarSelectedRecordIds.filter((sessionId) =>
+    sidebarHistoryRecordMap.has(sessionId),
+  );
+  const sidebarSelectedRecordIdSet = new Set(validSidebarSelectedRecordIds);
+  const sidebarContextRecord = sidebarContextMenu
+    ? sidebarHistoryRecordMap.get(sidebarContextMenu.recordId) ?? null
+    : null;
+  const sidebarContextRecordIsSelected = sidebarContextRecord
+    ? sidebarSelectedRecordIdSet.has(sidebarContextRecord.id)
+    : false;
+  const sidebarContextDeleteIds =
+    sidebarContextRecord &&
+    sidebarContextRecordIsSelected &&
+    validSidebarSelectedRecordIds.length > 0
+      ? validSidebarSelectedRecordIds
+      : sidebarContextRecord
+        ? [sidebarContextRecord.id]
+        : [];
+
+  const selectSidebarRecordRange = (targetId: string) => {
+    const orderedIds = historyRecords.map((record) => record.id);
+    const targetIndex = orderedIds.indexOf(targetId);
+    if (targetIndex === -1) {
+      return;
+    }
+
+    const anchorIndex = lastSidebarSelectedRecordIdRef.current
+      ? orderedIds.indexOf(lastSidebarSelectedRecordIdRef.current)
+      : -1;
+    if (anchorIndex === -1) {
+      setSidebarSelectedRecordIds([targetId]);
+      lastSidebarSelectedRecordIdRef.current = targetId;
+      return;
+    }
+
+    const start = Math.min(anchorIndex, targetIndex);
+    const end = Math.max(anchorIndex, targetIndex);
+    const rangeIds = orderedIds.slice(start, end + 1);
+    setSidebarSelectedRecordIds((current) => [...new Set([...current, ...rangeIds])]);
+    lastSidebarSelectedRecordIdRef.current = targetId;
+  };
+
+  const handleSidebarRecordClick = (
+    record: RecordView,
+    event: MouseEvent<HTMLButtonElement>,
+  ) => {
+    setSidebarContextMenu(null);
+    if (record.kind !== "history") {
+      setSidebarSelectedRecordIds([]);
+      lastSidebarSelectedRecordIdRef.current = null;
+      return;
+    }
+
+    if (event.shiftKey) {
+      event.preventDefault();
+      selectSidebarRecordRange(record.id);
+      return;
+    }
+
+    if (event.ctrlKey || event.metaKey) {
+      event.preventDefault();
+      toggleSidebarRecordSelection(record.id);
+      return;
+    }
+
+    setSidebarSelectedRecordIds([]);
+    lastSidebarSelectedRecordIdRef.current = record.id;
+    setRecordsOpen(false);
+    void loadSession(record.id);
+  };
+
+  useEffect(() => {
+    if (!sidebarContextMenu) {
+      return;
+    }
+
+    const closeContextMenu = () => {
+      setSidebarContextMenu(null);
+    };
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        closeContextMenu();
+      }
+    };
+
+    window.addEventListener("pointerdown", closeContextMenu);
+    window.addEventListener("resize", closeContextMenu);
+    window.addEventListener("keydown", handleEscape);
+    return () => {
+      window.removeEventListener("pointerdown", closeContextMenu);
+      window.removeEventListener("resize", closeContextMenu);
+      window.removeEventListener("keydown", handleEscape);
+    };
+  }, [sidebarContextMenu]);
 
   useEffect(() => {
     if (!hasActiveCapture || deferredSegments.length === 0) {
@@ -1369,6 +1517,8 @@ function App() {
                   ? hasActiveCapture
                   : !hasActiveCapture && record.id === selectedSessionId;
               const isDisabled = record.kind === "history" && hasActiveCapture;
+              const isBulkSelected =
+                record.kind === "history" && sidebarSelectedRecordIdSet.has(record.id);
               const badgeClass =
                 record.kind === "live"
                   ? "bg-blue-50 text-[#007aff]"
@@ -1377,19 +1527,48 @@ function App() {
                 <div
                   key={record.id}
                   className={`border-b border-slate-100 ${
-                    isSelected ? "border-l-2 border-l-[#007aff] bg-white" : ""
+                    isSelected
+                      ? "border-l-2 border-l-[#007aff] bg-white"
+                      : isBulkSelected
+                        ? "bg-[#eef5ff]"
+                        : ""
                   }`}
+                  onContextMenu={(event) => {
+                    if (record.kind !== "history") {
+                      return;
+                    }
+                    event.preventDefault();
+                    setSidebarContextMenu({
+                      recordId: record.id,
+                      x: event.clientX,
+                      y: event.clientY,
+                    });
+                  }}
                 >
                   <div className="flex items-start gap-3 px-4 py-3">
+                    {record.kind === "history" ? (
+                      <button
+                        type="button"
+                        disabled={isDisabled}
+                        onClick={() => toggleSidebarRecordSelection(record.id)}
+                        className={`mt-6 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md border transition-colors ${
+                          isBulkSelected
+                            ? "border-[#007aff] bg-[#007aff] text-white"
+                            : "border-slate-200 bg-white text-transparent hover:border-slate-300 hover:text-slate-300"
+                        } ${isDisabled ? "cursor-not-allowed opacity-60" : ""}`}
+                        aria-label={
+                          isBulkSelected
+                            ? `Deselect ${record.title}`
+                            : `Select ${record.title}`
+                        }
+                      >
+                        <Check className="size-3.5" />
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       disabled={isDisabled}
-                      onClick={() => {
-                        if (record.kind === "history") {
-                          setRecordsOpen(false);
-                          void loadSession(record.id);
-                        }
-                      }}
+                      onClick={(event) => handleSidebarRecordClick(record, event)}
                       className={`min-w-0 flex-1 text-left transition-colors ${
                         isDisabled
                           ? "cursor-not-allowed opacity-60"
@@ -1407,25 +1586,16 @@ function App() {
                         {record.title}
                       </h3>
                     </button>
-                    <div className="flex shrink-0 flex-col items-end gap-2">
+                    <div className="flex shrink-0 flex-col items-end gap-1">
                       <span className="app-mono text-[10px] tracking-[0.12em] text-slate-400">
                         {formatSidebarDate(record.createdAt)}
                       </span>
-                      {record.kind === "history" && record.audioUrl ? (
-                        <button
-                          type="button"
-                          onClick={() => void openRecordingInExplorer(record.id)}
-                          className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-400 transition-colors hover:border-slate-300 hover:text-slate-600"
-                          aria-label={`Open ${record.title} in Explorer`}
-                        >
-                          {openingRecordingId === record.id ? (
-                            <LoaderCircle className="size-3.5 animate-spin" />
-                          ) : (
-                            <FolderOpen className="size-3.5" />
-                          )}
-                        </button>
+                      {isBulkSelected ? (
+                        <span className="app-mono text-[10px] tracking-[0.12em] text-[#007aff]">
+                          Selected
+                        </span>
                       ) : (
-                        <div aria-hidden className="h-7 w-7" />
+                        <div aria-hidden className="h-[14px]" />
                       )}
                     </div>
                   </div>
@@ -1637,7 +1807,7 @@ function App() {
                       <div className="flex items-center justify-between gap-2 lg:block">
                         <div className="flex items-center gap-1">
                           <p
-                            className="truncate text-sm font-semibold text-slate-900"
+                            className="truncate text-[11px] font-semibold text-slate-900"
                             title={segment.speakerLabel}
                           >
                             {segment.speakerLabel}
@@ -1686,7 +1856,7 @@ function App() {
                           onChange={(event) =>
                             onSegmentEdit(segment.id, event.target.value)
                           }
-                          className="w-full resize-none border-0 bg-transparent px-0 py-0 text-[14px] leading-5 text-slate-900 outline-none transition focus:bg-[#f8fbff]"
+                          className="w-full resize-none border-0 bg-transparent px-0 py-0 text-[11px] leading-4 text-slate-900 outline-none transition focus:bg-[#f8fbff]"
                         />
                       </div>
                     </motion.article>
@@ -2275,6 +2445,76 @@ function App() {
               </Button>
             ) : null}
           </div>
+        </div>
+      ) : null}
+
+      {sidebarContextMenu && sidebarContextRecord ? (
+        <div
+          className="fixed z-[65] min-w-[220px] rounded-xl border border-slate-200 bg-white p-1.5 shadow-[0_16px_40px_rgba(15,23,42,0.16)]"
+          style={{
+            left: Math.min(sidebarContextMenu.x, window.innerWidth - 236),
+            top: Math.min(sidebarContextMenu.y, window.innerHeight - 214),
+          }}
+        >
+          <button
+            type="button"
+            onClick={() => {
+              toggleSidebarRecordSelection(sidebarContextRecord.id);
+              setSidebarContextMenu(null);
+            }}
+            className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-slate-600 transition-colors hover:bg-slate-50 hover:text-slate-900"
+          >
+            {sidebarContextRecordIsSelected ? (
+              <Check className="size-4" />
+            ) : (
+              <Square className="size-4" />
+            )}
+            {sidebarContextRecordIsSelected ? "Remove From Selection" : "Add To Selection"}
+          </button>
+          {validSidebarSelectedRecordIds.length > 0 ? (
+            <button
+              type="button"
+              onClick={() => {
+                setSidebarSelectedRecordIds([]);
+                lastSidebarSelectedRecordIdRef.current = null;
+                setSidebarContextMenu(null);
+              }}
+              className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-slate-600 transition-colors hover:bg-slate-50 hover:text-slate-900"
+            >
+              <X className="size-4" />
+              Clear Selection
+            </button>
+          ) : null}
+          {sidebarContextRecord.audioUrl ? (
+            <button
+              type="button"
+              onClick={() => {
+                void openRecordingInExplorer(sidebarContextRecord.id);
+                setSidebarContextMenu(null);
+              }}
+              className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-slate-600 transition-colors hover:bg-slate-50 hover:text-slate-900"
+            >
+              {openingRecordingId === sidebarContextRecord.id ? (
+                <LoaderCircle className="size-4 animate-spin" />
+              ) : (
+                <FolderOpen className="size-4" />
+              )}
+              Open In Explorer
+            </button>
+          ) : null}
+          <button
+            type="button"
+            onClick={() => {
+              void deleteSessions(sidebarContextDeleteIds);
+              setSidebarContextMenu(null);
+            }}
+            className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-rose-600 transition-colors hover:bg-rose-50"
+          >
+            <Trash2 className="size-4" />
+            {sidebarContextDeleteIds.length > 1
+              ? `Delete Selected (${sidebarContextDeleteIds.length})`
+              : "Delete"}
+          </button>
         </div>
       ) : null}
     </div>
