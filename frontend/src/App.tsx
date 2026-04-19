@@ -224,10 +224,6 @@ function formatLongClock(seconds: number) {
   return `${hours}:${minutes}:${secs}`;
 }
 
-function formatRangeClock(startedAt: number, duration: number) {
-  return `${formatLongClock(startedAt)} - ${formatLongClock(startedAt + duration)}`;
-}
-
 function formatReference(id?: string | null) {
   return `REF: ${(id ?? "live").slice(0, 10).toUpperCase()}`;
 }
@@ -1636,9 +1632,9 @@ function App() {
                       animate={{ opacity: 1, y: 0 }}
                       exit={{ opacity: 0, y: -8 }}
                       transition={{ duration: 0.18, ease: "easeOut" }}
-                      className={`border-b border-slate-100 py-3 ${TRANSCRIPT_GRID_CLASS}`}
+                      className={`border-b border-slate-100 py-1.5 ${TRANSCRIPT_GRID_CLASS}`}
                     >
-                      <div className="flex items-start justify-between gap-3 lg:block">
+                      <div className="flex items-center justify-between gap-2 lg:block">
                         <div className="flex items-center gap-1">
                           <p
                             className="truncate text-sm font-semibold text-slate-900"
@@ -1662,7 +1658,7 @@ function App() {
                         </span>
                       </div>
 
-                      <div className="mt-2 app-mono text-[11px] text-slate-400 lg:mt-0">
+                      <div className="mt-1 app-mono text-[11px] text-slate-400 lg:mt-0">
                         <div className="flex items-center gap-2">
                           <p className="font-semibold text-slate-500">
                             {formatLongClock(segment.startedAt)}
@@ -1678,22 +1674,19 @@ function App() {
                             </button>
                           ) : null}
                         </div>
-                        <p className="mt-1">
-                          {formatRangeClock(segment.startedAt, segment.duration)}
-                        </p>
                       </div>
 
-                      <div className="mt-3 min-w-0 lg:mt-0">
+                      <div className="mt-1 min-w-0 lg:mt-0">
                         <textarea
                           value={segment.text}
                           rows={Math.max(
                             1,
-                            Math.ceil(Math.max(segment.text.length, 1) / 180),
+                            Math.ceil(Math.max(segment.text.length, 1) / 340),
                           )}
                           onChange={(event) =>
                             onSegmentEdit(segment.id, event.target.value)
                           }
-                          className="w-full resize-none border-0 bg-transparent px-0 py-0 text-[15px] leading-7 text-slate-900 outline-none transition focus:bg-[#f8fbff]"
+                          className="w-full resize-none border-0 bg-transparent px-0 py-0 text-[14px] leading-5 text-slate-900 outline-none transition focus:bg-[#f8fbff]"
                         />
                       </div>
                     </motion.article>

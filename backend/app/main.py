@@ -61,37 +61,21 @@ def open_in_explorer(path: Path) -> None:
 
 
 def open_windows_directory_picker(initial_dir: Path) -> str | None:
-    script = """
-Add-Type -AssemblyName System.Windows.Forms
-$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-$dialog.Description = 'Select recording destination'
-$dialog.UseDescriptionForTitle = $true
-if ($args.Length -gt 0 -and $args[0] -and (Test-Path $args[0])) {
-    $dialog.SelectedPath = $args[0]
-}
-if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-    Write-Output $dialog.SelectedPath
-}
-"""
-    result = subprocess.run(
-        [
-            "powershell",
-            "-NoProfile",
-            "-STA",
-            "-Command",
-            script,
-            str(initial_dir),
-        ],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        check=False,
-    )
-    if result.returncode != 0:
-        message = result.stderr.strip() or "Unable to open the Windows folder picker."
-        raise RuntimeError(message)
-    selected = result.stdout.strip()
+    from tkinter import Tk, filedialog
+
+    root = Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    root.update()
+    try:
+        selected = filedialog.askdirectory(
+            parent=root,
+            initialdir=str(initial_dir),
+            title="Select recording destination",
+            mustexist=False,
+        )
+    finally:
+        root.destroy()
     return selected or None
 
 
@@ -185,10 +169,7 @@ async def pick_recordings_root():
     settings = settings_service.get_settings()
     paths = resolve_paths(settings)
     try:
-        selected_path = await asyncio.to_thread(
-            open_windows_directory_picker,
-            Path(paths.temp_recordings_root),
-        )
+        selected_path = open_windows_directory_picker(Path(paths.temp_recordings_root))
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return JSONResponse({"path": selected_path})

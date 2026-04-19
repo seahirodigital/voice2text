@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 import re
-import wave
 from pathlib import Path
+
+import numpy as np
+import soundfile as sf
+from scipy.signal import resample_poly
 
 from app.models.schemas import (
     SessionDetail,
@@ -14,6 +17,7 @@ from app.models.schemas import (
 
 DEFAULT_SESSION_TITLE = "New Transcript"
 INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+TARGET_RECORDING_SAMPLE_RATE = 16000
 
 
 class SessionStore:
@@ -127,13 +131,19 @@ class SessionStore:
         channels: int = 1,
         title: str | None = None,
     ) -> str:
-        wav_path = self._unique_recording_path(title or session_id)
-        with wave.open(str(wav_path), "wb") as wav_file:
-            wav_file.setnchannels(channels)
-            wav_file.setsampwidth(2)
-            wav_file.setframerate(sample_rate)
-            wav_file.writeframes(pcm_bytes)
-        return f"/recordings/{wav_path.name}"
+        recording_path = self._unique_recording_path(
+            title or session_id,
+            extension=".flac",
+        )
+        audio = self._prepare_recording_audio(pcm_bytes, sample_rate, channels)
+        sf.write(
+            str(recording_path),
+            audio,
+            TARGET_RECORDING_SAMPLE_RATE,
+            format="FLAC",
+            subtype="PCM_16",
+        )
+        return f"/recordings/{recording_path.name}"
 
     def _read_index(self) -> list[dict]:
         return json.loads(self.index_path.read_text(encoding="utf-8"))
@@ -166,22 +176,28 @@ class SessionStore:
         sanitized = re.sub(r"\s+", " ", sanitized)
         return (sanitized or DEFAULT_SESSION_TITLE)[:80]
 
-    def _unique_recording_path(self, title: str, current_path: Path | None = None) -> Path:
+    def _unique_recording_path(
+        self,
+        title: str,
+        current_path: Path | None = None,
+        extension: str | None = None,
+    ) -> Path:
         stem = self._safe_filename_stem(title)
-        candidate = self.recordings_root / f"{stem}.wav"
+        suffix = extension or (current_path.suffix if current_path else ".flac")
+        candidate = self.recordings_root / f"{stem}{suffix}"
         if current_path is not None and candidate == current_path:
             return candidate
         if not candidate.exists():
             return candidate
 
-        suffix = 2
+        index = 2
         while True:
-            candidate = self.recordings_root / f"{stem}-{suffix}.wav"
+            candidate = self.recordings_root / f"{stem}-{index}{suffix}"
             if current_path is not None and candidate == current_path:
                 return candidate
             if not candidate.exists():
                 return candidate
-            suffix += 1
+            index += 1
 
     def _rename_recording(self, audio_url: str, title: str) -> str:
         current_path = self.recordings_root / Path(audio_url).name
@@ -194,3 +210,27 @@ class SessionStore:
 
         current_path.rename(target_path)
         return f"/recordings/{target_path.name}"
+
+    @staticmethod
+    def _prepare_recording_audio(
+        pcm_bytes: bytes,
+        sample_rate: int,
+        channels: int,
+    ) -> np.ndarray:
+        audio = np.frombuffer(pcm_bytes, dtype="<i2").astype(np.float32)
+        if audio.size == 0:
+            return np.zeros(1, dtype=np.float32)
+
+        channel_count = max(1, channels)
+        if channel_count > 1:
+            usable = audio[: audio.size - (audio.size % channel_count)]
+            if usable.size == 0:
+                return np.zeros(1, dtype=np.float32)
+            audio = usable.reshape(-1, channel_count).mean(axis=1)
+
+        audio /= 32768.0
+
+        if sample_rate != TARGET_RECORDING_SAMPLE_RATE:
+            audio = resample_poly(audio, TARGET_RECORDING_SAMPLE_RATE, sample_rate)
+
+        return np.clip(audio.astype(np.float32), -1.0, 1.0)
