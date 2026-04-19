@@ -1,6 +1,5 @@
 import { AnimatePresence, motion } from "framer-motion";
 import {
-  AudioLines,
   Check,
   CirclePause,
   Copy,
@@ -43,6 +42,8 @@ import type {
 
 const EMPTY_WAVEFORM = Array.from({ length: 96 }, () => 0);
 const LIVE_RECORD_ID = "__live__";
+const MIN_UPDATE_INTERVAL_MS = 100;
+const MAX_UPDATE_INTERVAL_MS = 5000;
 
 const LANGUAGE_LABELS: Record<string, string> = {
   ja: "Japanese",
@@ -62,12 +63,6 @@ const STATUS_LABELS: Record<RecordingStatus, string> = {
   paused: "Paused",
   saving: "Saving",
   error: "Error",
-};
-
-const SPEAKER_SOURCE_LABELS: Record<string, string> = {
-  moonshine: "Moonshine",
-  "feature-fallback": "Feature fallback",
-  "carry-forward": "Carry forward",
 };
 
 interface RecordView {
@@ -183,17 +178,22 @@ function parseDate(value?: string | null) {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
-function formatRecordDate(value?: string | null) {
+function formatSidebarDate(value?: string | null) {
   const parsed = parseDate(value);
   if (!parsed) {
-    return "NOW";
+    return new Intl.DateTimeFormat("ja-JP", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    })
+      .format(new Date())
+      .replace(/\//g, "/");
   }
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
+  return new Intl.DateTimeFormat("ja-JP", {
+    year: "numeric",
+    month: "2-digit",
     day: "2-digit",
-  })
-    .format(parsed)
-    .toUpperCase();
+  }).format(parsed);
 }
 
 function formatHeaderDate(value?: string | null) {
@@ -224,22 +224,6 @@ function formatRangeClock(startedAt: number, duration: number) {
   return `${formatLongClock(startedAt)} - ${formatLongClock(startedAt + duration)}`;
 }
 
-function formatRecordLength(seconds: number) {
-  const total = Math.max(0, Math.floor(seconds));
-  const hours = Math.floor(total / 3600);
-  const minutes = Math.floor((total % 3600) / 60);
-  if (hours > 0 && minutes > 0) {
-    return `${hours}h ${minutes}m`;
-  }
-  if (hours > 0) {
-    return `${hours}h`;
-  }
-  if (minutes > 0) {
-    return `${minutes}m`;
-  }
-  return total > 0 ? "<1m" : "0m";
-}
-
 function formatReference(id?: string | null) {
   return `REF: ${(id ?? "live").slice(0, 10).toUpperCase()}`;
 }
@@ -258,6 +242,22 @@ function normalizeTitleInput(value: string, fallback: string) {
   return normalized || fallback;
 }
 
+function clampUpdateInterval(value: number) {
+  return Math.min(MAX_UPDATE_INTERVAL_MS, Math.max(MIN_UPDATE_INTERVAL_MS, value));
+}
+
+function coerceUpdateInterval(value: string, fallback: number) {
+  const digits = value.replace(/[^\d]/g, "");
+  if (!digits) {
+    return fallback;
+  }
+  const parsed = Number(digits);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return clampUpdateInterval(parsed);
+}
+
 function recordMatchesFilter(record: RecordView, filterText: string) {
   const query = filterText.trim().toLowerCase();
   if (!query) {
@@ -268,7 +268,7 @@ function recordMatchesFilter(record: RecordView, filterText: string) {
     record.language,
     record.deviceLabel,
     record.summary,
-    formatRecordDate(record.createdAt),
+    formatSidebarDate(record.createdAt),
   ]
     .join(" ")
     .toLowerCase();
@@ -295,6 +295,7 @@ function App() {
   const [copied, setCopied] = useState(false);
   const [editVersion, setEditVersion] = useState(0);
   const [recordFilter, setRecordFilter] = useState("");
+  const [updateIntervalDraft, setUpdateIntervalDraft] = useState("");
   const [historySortOrder, setHistorySortOrder] = useState<"newest" | "oldest">(
     "newest",
   );
@@ -323,6 +324,9 @@ function App() {
   const bootstrapInFlightRef = useRef(false);
   const dirtySegmentIdsRef = useRef<Set<string>>(new Set());
   const timelineSegmentsRef = useRef<TranscriptSegment[]>([]);
+  const transcriptScrollRef = useRef<HTMLDivElement | null>(null);
+  const segmentRowRefs = useRef<Map<string, HTMLElement>>(new Map());
+  const lastLiveSegmentIdRef = useRef<string | null>(null);
   const statusRef = useRef<RecordingStatus>("idle");
   const isLiveSessionRef = useRef(false);
   const pendingLiveTitleRef = useRef<string | null>(null);
@@ -401,10 +405,31 @@ function App() {
   };
 
   const updateSessionTitle = async (sessionId: string, title: string) => {
-    const detail = await apiFetch<SessionDetail>(`/api/sessions/${sessionId}/title`, {
-      method: "PUT",
-      body: JSON.stringify({ title }),
-    });
+    const payload = JSON.stringify({ title });
+    let detail: SessionDetail | null = null;
+
+    for (const method of ["PUT", "PATCH", "POST"] as const) {
+      try {
+        detail = await apiFetch<SessionDetail>(`/api/sessions/${sessionId}/title`, {
+          method,
+          body: payload,
+        });
+        break;
+      } catch (updateError) {
+        if (
+          !(updateError instanceof Error) ||
+          !updateError.message.includes("Method Not Allowed") ||
+          method === "POST"
+        ) {
+          throw updateError;
+        }
+      }
+    }
+
+    if (!detail) {
+      throw new Error("Failed to save the title.");
+    }
+
     startTransition(() => {
       setHistory((current) => {
         const summary = toSessionSummary(detail);
@@ -437,6 +462,9 @@ function App() {
       setError(null);
       setSettingsResponse(settingsPayload);
       setDraftSettings(settingsPayload.settings);
+      setUpdateIntervalDraft(
+        String(settingsPayload.settings.transcription.updateIntervalMs),
+      );
       setMeta(metaPayload);
       setHistory(sessions);
 
@@ -537,6 +565,7 @@ function App() {
       message.type === "line_completed"
     ) {
       const incoming = message.payload as unknown as TranscriptSegment;
+      lastLiveSegmentIdRef.current = incoming.id;
       startTransition(() => {
         setTimelineSegments((current) =>
           mergeIncomingSegment(current, incoming, dirtySegmentIdsRef.current),
@@ -577,6 +606,7 @@ function App() {
       pendingLiveTitleRef.current = null;
       setLiveTitleOverride(null);
       setCurrentSessionId(session.id);
+      lastLiveSegmentIdRef.current = null;
       setStatus("idle");
       setError(null);
       closeSocket();
@@ -590,6 +620,7 @@ function App() {
       isLiveSessionRef.current = false;
       setLiveSessionStartedAt(null);
       pendingLiveTitleRef.current = null;
+      lastLiveSegmentIdRef.current = null;
       await teardownAudio();
       closeSocket();
     }
@@ -666,6 +697,7 @@ function App() {
     setLiveSessionStartedAt(new Date().toISOString());
     setLiveTitleOverride(null);
     pendingLiveTitleRef.current = null;
+    lastLiveSegmentIdRef.current = null;
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -807,6 +839,7 @@ function App() {
       setLiveSessionStartedAt(null);
       pendingLiveTitleRef.current = null;
       setLiveTitleOverride(null);
+      lastLiveSegmentIdRef.current = null;
     }
   };
 
@@ -849,6 +882,7 @@ function App() {
       });
       setSettingsResponse(response);
       setDraftSettings(response.settings);
+      setUpdateIntervalDraft(String(response.settings.transcription.updateIntervalMs));
       setMeta(await apiFetch<MetaResponse>("/api/meta"));
     } catch (saveError) {
       setError(
@@ -985,6 +1019,60 @@ function App() {
   const canDeleteSelectedSession = Boolean(selectedSessionId && !hasActiveCapture);
   const activeTitle = activeRecord?.title ?? "Voice2Text Workspace";
 
+  useEffect(() => {
+    if (!hasActiveCapture || deferredSegments.length === 0) {
+      return;
+    }
+
+    const container = transcriptScrollRef.current;
+    if (!container) {
+      return;
+    }
+
+    const latestIncomplete =
+      [...deferredSegments].reverse().find((segment) => !segment.isComplete) ??
+      deferredSegments.at(-1) ??
+      null;
+    const preferredId =
+      (lastLiveSegmentIdRef.current &&
+        deferredSegments.some((segment) => segment.id === lastLiveSegmentIdRef.current) &&
+        lastLiveSegmentIdRef.current) ||
+      latestIncomplete?.id ||
+      null;
+
+    if (!preferredId) {
+      return;
+    }
+
+    const targetElement = segmentRowRefs.current.get(preferredId);
+    if (!targetElement) {
+      return;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      const containerRect = container.getBoundingClientRect();
+      const targetRect = targetElement.getBoundingClientRect();
+      const targetTop = targetRect.top - containerRect.top + container.scrollTop;
+      const desiredTop = container.clientHeight * 0.78;
+      const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+      const nextScrollTop = Math.min(
+        maxScrollTop,
+        Math.max(0, targetTop - desiredTop),
+      );
+
+      if (Math.abs(container.scrollTop - nextScrollTop) > 4) {
+        container.scrollTo({
+          top: nextScrollTop,
+          behavior: status === "recording" ? "smooth" : "auto",
+        });
+      }
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+    };
+  }, [deferredSegments, hasActiveCapture, status]);
+
   const beginTitleEdit = () => {
     setTitleDraft(activeTitle);
     setIsEditingTitle(true);
@@ -1068,69 +1156,51 @@ function App() {
           recordsOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >
-        <div className="border-b border-slate-200 px-4 py-4">
-          <div className="mb-4 flex items-center justify-between gap-3">
-            <div>
-              <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-slate-400">
-                Records
-              </p>
-              <p className="mt-1 text-sm text-slate-500">
-                Saved transcripts and the current live capture.
-              </p>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => void refreshHistory()}
-                className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-500 transition-colors hover:border-slate-300 hover:text-slate-700"
-                aria-label="Refresh records"
-              >
-                <RefreshCcw className="size-4" />
-              </button>
-              <button
-                type="button"
-                onClick={() =>
-                  setHistorySortOrder((current) =>
-                    current === "newest" ? "oldest" : "newest",
-                  )
-                }
-                className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-500 transition-colors hover:border-slate-300 hover:text-slate-700"
-                aria-label="Toggle sort order"
-              >
-                <SlidersHorizontal className="size-4" />
-              </button>
-            </div>
-          </div>
-
-          <Button
-            className="w-full rounded-lg px-4 py-2.5"
-            onClick={() => void startRecording()}
-            disabled={!appReady || hasActiveCapture}
-          >
-            {status === "connecting" ? (
-              <LoaderCircle className="size-4 animate-spin" />
-            ) : (
-              <Mic className="size-4" />
-            )}
-            {hasActiveCapture
-              ? STATUS_LABELS[status]
-              : appReady
-                ? "New Record"
-                : "Waiting for Backend"}
-          </Button>
-        </div>
-
         <div className="border-b border-slate-200 px-4 py-3">
-          <label className="relative block">
-            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
-            <input
-              type="text"
-              value={recordFilter}
-              onChange={(event) => setRecordFilter(event.target.value)}
-              placeholder="Filter transcripts..."
-              className="w-full rounded-lg border border-slate-200 bg-white py-2 pl-9 pr-3 text-sm outline-none transition focus:border-[#007aff] focus:ring-2 focus:ring-[#007aff]/15"
-            />
-          </label>
+          <div className="flex items-center gap-2">
+            <label className="relative block flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
+              <input
+                type="text"
+                value={recordFilter}
+                onChange={(event) => setRecordFilter(event.target.value)}
+                placeholder="Filter transcripts..."
+                className="w-full rounded-lg border border-slate-200 bg-white py-2 pl-9 pr-3 text-sm outline-none transition focus:border-[#007aff] focus:ring-2 focus:ring-[#007aff]/15"
+              />
+            </label>
+            <Button
+              className="min-w-[6.75rem] rounded-lg px-3 py-2.5"
+              onClick={() => void startRecording()}
+              disabled={!appReady || hasActiveCapture}
+            >
+              {status === "connecting" ? (
+                <LoaderCircle className="size-4 animate-spin" />
+              ) : (
+                <Mic className="size-4" />
+              )}
+              {hasActiveCapture ? STATUS_LABELS[status] : appReady ? "New" : "Wait"}
+            </Button>
+            <button
+              type="button"
+              onClick={() => void refreshHistory()}
+              className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition-colors hover:border-slate-300 hover:text-slate-700"
+              aria-label="Refresh records"
+            >
+              <RefreshCcw className="size-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                setHistorySortOrder((current) =>
+                  current === "newest" ? "oldest" : "newest",
+                )
+              }
+              className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition-colors hover:border-slate-300 hover:text-slate-700"
+              aria-label="Toggle sort order"
+            >
+              <SlidersHorizontal className="size-4" />
+            </button>
+          </div>
         </div>
 
         <div className="app-scrollbar flex-1 overflow-y-auto">
@@ -1167,36 +1237,25 @@ function App() {
                         void loadSession(record.id);
                       }
                     }}
-                    className={`w-full px-4 py-4 text-left transition-colors ${
+                    className={`w-full px-4 py-3 text-left transition-colors ${
                       isDisabled
                         ? "cursor-not-allowed opacity-60"
                         : "hover:bg-white/80 active:bg-white"
                     }`}
                   >
-                    <div className="mb-1 flex items-start justify-between gap-3">
+                    <div className="mb-1 flex items-center justify-between gap-3">
                       <span
                         className={`app-mono inline-flex rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-[0.18em] ${badgeClass}`}
                       >
                         {record.badgeLabel}
                       </span>
-                      <span className="app-mono text-[10px] tracking-[0.18em] text-slate-400">
-                        {record.kind === "live" ? "NOW" : formatRecordDate(record.createdAt)}
+                      <span className="app-mono text-[10px] tracking-[0.12em] text-slate-400">
+                        {formatSidebarDate(record.createdAt)}
                       </span>
                     </div>
                     <h3 className="truncate text-sm font-semibold text-slate-900">
                       {record.title}
                     </h3>
-                    <p className="mt-1 line-clamp-1 text-[11px] text-slate-500">
-                      {record.summary}
-                    </p>
-                    <div className="mt-3 flex items-center gap-3 text-[10px] uppercase tracking-[0.18em] text-slate-400">
-                      <span className="app-mono flex items-center gap-1">
-                        <AudioLines className="size-3" />
-                        {formatRecordLength(record.durationSeconds)}
-                      </span>
-                      <span className="app-mono">{record.lineCount} lines</span>
-                      <span className="app-mono">{record.language}</span>
-                    </div>
                   </button>
                 </div>
               );
@@ -1204,8 +1263,8 @@ function App() {
           )}
         </div>
 
-        <div className="border-t border-slate-200 px-4 py-4">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-slate-400">
+        <div className="border-t border-slate-200 px-4 py-3">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-400">
             Recorded Audio
           </p>
           {showAudioPlayer ? (
@@ -1213,7 +1272,7 @@ function App() {
               <p className="mt-1 truncate text-sm font-medium text-slate-900">
                 {selectedHistoryRecord?.title ?? activeTitle}
               </p>
-              <audio controls className="mt-3 w-full" src={currentAudioUrl ?? ""} />
+              <audio controls className="mt-2 w-full" src={currentAudioUrl ?? ""} />
             </>
           ) : (
             <p className="mt-2 text-sm leading-6 text-slate-500">
@@ -1225,7 +1284,7 @@ function App() {
 
       <section className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <header className="flex h-16 flex-shrink-0 items-center justify-between border-b border-slate-200 bg-white/90 px-4 backdrop-blur-sm sm:px-6 lg:px-8">
-          <div className="flex min-w-0 items-center gap-3">
+          <div className="flex min-w-0 flex-1 items-center gap-3">
             <button
               type="button"
               onClick={() => setRecordsOpen(true)}
@@ -1234,8 +1293,8 @@ function App() {
             >
               <FolderOpen className="size-5" />
             </button>
-            <div className="min-w-0">
-              <div className="flex min-w-0 items-center gap-2">
+            <div className="min-w-0 flex-1">
+              <div className="flex min-w-0 max-w-[56rem] items-center gap-2">
                 {isEditingTitle ? (
                   <input
                     value={titleDraft}
@@ -1254,7 +1313,7 @@ function App() {
                     placeholder="Session title"
                   />
                 ) : (
-                  <h1 className="truncate text-lg font-bold text-slate-900">
+                  <h1 className="truncate text-lg font-bold text-slate-900 sm:text-xl">
                     {activeTitle}
                   </h1>
                 )}
@@ -1294,8 +1353,6 @@ function App() {
                 )}
               </div>
               <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-slate-500">
-                <span>{activeRecord?.deviceLabel ?? "Select a microphone to begin."}</span>
-                <span className="hidden h-4 w-px bg-slate-200 sm:block" />
                 <span>{formatHeaderDate(activeRecord?.createdAt)}</span>
                 <span className="hidden h-4 w-px bg-slate-200 sm:block" />
                 <span className="app-mono text-[11px] uppercase tracking-[0.24em] text-slate-400">
@@ -1357,7 +1414,10 @@ function App() {
           </div>
         </header>
 
-        <div className="app-scrollbar flex-1 overflow-y-auto px-4 py-6 sm:px-6 lg:px-8">
+        <div
+          ref={transcriptScrollRef}
+          className="app-scrollbar flex-1 overflow-y-auto px-4 py-6 sm:px-6 lg:px-8"
+        >
           <div className="mx-auto w-full max-w-[1380px] pb-10">
             <div className="hidden grid-cols-[88px_112px_minmax(0,1fr)] gap-6 border-b border-slate-200 pb-3 text-[10px] font-bold uppercase tracking-[0.24em] text-slate-400 lg:grid">
               <div>Speaker</div>
@@ -1381,23 +1441,24 @@ function App() {
                   deferredSegments.map((segment) => (
                     <motion.article
                       key={segment.id}
+                      ref={(node) => {
+                        if (node) {
+                          segmentRowRefs.current.set(segment.id, node);
+                        } else {
+                          segmentRowRefs.current.delete(segment.id);
+                        }
+                      }}
                       layout
                       initial={{ opacity: 0, y: 8 }}
                       animate={{ opacity: 1, y: 0 }}
                       exit={{ opacity: 0, y: -8 }}
                       transition={{ duration: 0.18, ease: "easeOut" }}
-                      className="border-b border-slate-100 py-4 lg:grid lg:grid-cols-[88px_112px_minmax(0,1fr)] lg:gap-6"
+                      className="border-b border-slate-100 py-3 lg:grid lg:grid-cols-[88px_112px_minmax(0,1fr)] lg:gap-6"
                     >
                       <div className="flex items-start justify-between gap-3 lg:block">
-                        <div>
-                          <p className="text-sm font-semibold text-slate-900">
-                            {segment.speakerLabel}
-                          </p>
-                          <p className="mt-1 text-[10px] uppercase tracking-[0.18em] text-slate-400">
-                            {SPEAKER_SOURCE_LABELS[segment.speakerSource] ??
-                              segment.speakerSource}
-                          </p>
-                        </div>
+                        <p className="text-sm font-semibold text-slate-900">
+                          {segment.speakerLabel}
+                        </p>
                         <span className="app-mono text-[11px] font-semibold text-slate-500 lg:hidden">
                           {formatLongClock(segment.startedAt)}
                         </span>
@@ -1417,18 +1478,19 @@ function App() {
                           value={segment.text}
                           rows={Math.max(
                             1,
-                            Math.ceil(Math.max(segment.text.length, 1) / 120),
+                            Math.ceil(Math.max(segment.text.length, 1) / 180),
                           )}
                           onChange={(event) =>
                             onSegmentEdit(segment.id, event.target.value)
                           }
-                          className="w-full resize-none border-0 bg-transparent px-0 py-0 text-[15px] leading-8 text-slate-900 outline-none transition focus:bg-[#f8fbff]"
+                          className="w-full resize-none border-0 bg-transparent px-0 py-0 text-[15px] leading-7 text-slate-900 outline-none transition focus:bg-[#f8fbff]"
                         />
                       </div>
                     </motion.article>
                   ))
                 )}
               </AnimatePresence>
+              {hasActiveCapture ? <div aria-hidden className="h-[24vh]" /> : null}
             </div>
           </div>
         </div>
@@ -1664,20 +1726,42 @@ function App() {
                         <div className="space-y-2">
                           <label className="field-label">Update Interval ms</label>
                           <input
-                            type="number"
-                            min={100}
-                            max={5000}
-                            value={draftSettings.transcription.updateIntervalMs}
-                            onChange={(event) =>
+                            type="text"
+                            inputMode="numeric"
+                            value={updateIntervalDraft}
+                            onChange={(event) => {
+                              const rawValue = event.target.value.replace(/[^\d]/g, "");
+                              setUpdateIntervalDraft(rawValue);
+                              if (!rawValue) {
+                                return;
+                              }
                               updateDraftSettings((current) => ({
                                 ...current,
                                 transcription: {
                                   ...current.transcription,
-                                  updateIntervalMs: Number(event.target.value),
+                                  updateIntervalMs: coerceUpdateInterval(
+                                    rawValue,
+                                    current.transcription.updateIntervalMs,
+                                  ),
                                 },
-                              }))
-                            }
+                              }));
+                            }}
+                            onBlur={() => {
+                              const nextInterval = coerceUpdateInterval(
+                                updateIntervalDraft,
+                                draftSettings.transcription.updateIntervalMs,
+                              );
+                              setUpdateIntervalDraft(String(nextInterval));
+                              updateDraftSettings((current) => ({
+                                ...current,
+                                transcription: {
+                                  ...current.transcription,
+                                  updateIntervalMs: nextInterval,
+                                },
+                              }));
+                            }}
                             className="field-input"
+                            placeholder="100 - 5000"
                           />
                         </div>
                       </div>

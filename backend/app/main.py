@@ -96,7 +96,8 @@ async def update_session_transcript(session_id: str, payload: TranscriptUpdatePa
     return detail
 
 
-@app.put("/api/sessions/{session_id}/title")
+@app.api_route("/api/sessions/{session_id}/title", methods=["PUT", "PATCH", "POST"])
+@app.api_route("/api/sessions/{session_id}/title/", methods=["PUT", "PATCH", "POST"])
 async def update_session_title(session_id: str, payload: SessionTitleUpdatePayload):
     store = get_store()
     detail = store.update_session_title(session_id, payload.title)
