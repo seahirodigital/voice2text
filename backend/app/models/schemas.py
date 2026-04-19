@@ -36,10 +36,10 @@ class PathSettings(BaseModel):
 
 class TranscriptionSettings(BaseModel):
     language: str = "ja"
-    model_preset: str = Field(default="tiny", alias="modelPreset")
+    model_preset: str = Field(default="base", alias="modelPreset")
     max_speakers: int = Field(default=3, alias="maxSpeakers", ge=1, le=3)
     update_interval_ms: int = Field(
-        default=400, alias="updateIntervalMs", ge=100, le=5000
+        default=5000, alias="updateIntervalMs", ge=100, le=5000
     )
     enable_word_timestamps: bool = Field(
         default=False, alias="enableWordTimestamps"
@@ -134,7 +134,7 @@ class MetaResponse(BaseModel):
 
 class StartSessionPayload(BaseModel):
     language: str = "ja"
-    model_preset: str = Field(default="tiny", alias="modelPreset")
+    model_preset: str = Field(default="base", alias="modelPreset")
     browser_sample_rate: int = Field(alias="browserSampleRate", ge=8000, le=96000)
     channels: int = Field(default=1, ge=1, le=2)
     device_label: str = Field(default="Default Microphone", alias="deviceLabel")

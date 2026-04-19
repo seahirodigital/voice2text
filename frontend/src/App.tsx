@@ -301,6 +301,8 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [waveform, setWaveform] = useState<number[]>(EMPTY_WAVEFORM);
   const [savingSettings, setSavingSettings] = useState(false);
+  const [choosingRecordingsRoot, setChoosingRecordingsRoot] = useState(false);
+  const [openingRecordingId, setOpeningRecordingId] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [editVersion, setEditVersion] = useState(0);
   const [recordFilter, setRecordFilter] = useState("");
@@ -909,15 +911,16 @@ function App() {
     await teardownAudio();
   };
 
-  const saveSettings = async () => {
-    if (!draftSettings) {
+  const saveSettings = async (nextSettings?: AppSettings | null) => {
+    const settingsToSave = nextSettings ?? draftSettings;
+    if (!settingsToSave) {
       return;
     }
     setSavingSettings(true);
     try {
       const response = await apiFetch<SettingsResponse>("/api/settings", {
         method: "PUT",
-        body: JSON.stringify(draftSettings),
+        body: JSON.stringify(settingsToSave),
       });
       setSettingsResponse(response);
       setDraftSettings(response.settings);
@@ -931,6 +934,45 @@ function App() {
       );
     } finally {
       setSavingSettings(false);
+    }
+  };
+
+  const chooseRecordingsRoot = async () => {
+    const baseSettings = settingsResponse?.settings ?? draftSettings;
+    if (!baseSettings || hasActiveCapture) {
+      return;
+    }
+
+    setChoosingRecordingsRoot(true);
+    try {
+      const response = await apiFetch<{ path?: string | null }>(
+        "/api/system/pick-recordings-root",
+        {
+          method: "POST",
+        },
+      );
+      if (!response.path) {
+        return;
+      }
+
+      const nextSettings: AppSettings = {
+        ...baseSettings,
+        paths: {
+          ...baseSettings.paths,
+          tempRecordingsRoot: response.path,
+        },
+      };
+
+      setDraftSettings(nextSettings);
+      await saveSettings(nextSettings);
+    } catch (pickError) {
+      setError(
+        pickError instanceof Error
+          ? pickError.message
+          : "Failed to choose the recordings folder.",
+      );
+    } finally {
+      setChoosingRecordingsRoot(false);
     }
   };
 
@@ -1043,6 +1085,23 @@ function App() {
           ? playError.message
           : "Unable to start audio playback for this segment.",
       );
+    }
+  };
+
+  const openRecordingInExplorer = async (sessionId: string) => {
+    setOpeningRecordingId(sessionId);
+    try {
+      await apiFetch<{ opened: boolean }>(`/api/sessions/${sessionId}/open-recording`, {
+        method: "POST",
+      });
+    } catch (openError) {
+      setError(
+        openError instanceof Error
+          ? openError.message
+          : "Failed to open the recording in Explorer.",
+      );
+    } finally {
+      setOpeningRecordingId((current) => (current === sessionId ? null : current));
     }
   };
 
@@ -1270,6 +1329,23 @@ function App() {
             >
               <SlidersHorizontal className="size-4" />
             </button>
+            <button
+              type="button"
+              onClick={() => void chooseRecordingsRoot()}
+              disabled={!draftSettings || hasActiveCapture || savingSettings}
+              title={
+                settingsResponse?.resolvedPaths.tempRecordingsRoot ??
+                draftSettings?.paths.tempRecordingsRoot
+              }
+              className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition-colors hover:border-slate-300 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
+              aria-label="Choose recordings folder"
+            >
+              {choosingRecordingsRoot ? (
+                <LoaderCircle className="size-4 animate-spin" />
+              ) : (
+                <Save className="size-4" />
+              )}
+            </button>
           </div>
           <label className="relative mt-3 block">
             <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
@@ -1308,35 +1384,55 @@ function App() {
                     isSelected ? "border-l-2 border-l-[#007aff] bg-white" : ""
                   }`}
                 >
-                  <button
-                    type="button"
-                    disabled={isDisabled}
-                    onClick={() => {
-                      if (record.kind === "history") {
-                        setRecordsOpen(false);
-                        void loadSession(record.id);
-                      }
-                    }}
-                    className={`w-full px-4 py-3 text-left transition-colors ${
-                      isDisabled
-                        ? "cursor-not-allowed opacity-60"
-                        : "hover:bg-white/80 active:bg-white"
-                    }`}
-                  >
-                    <div className="mb-1 flex items-center justify-between gap-3">
-                      <span
-                        className={`app-mono inline-flex rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-[0.18em] ${badgeClass}`}
-                      >
-                        {record.badgeLabel}
-                      </span>
+                  <div className="flex items-start gap-3 px-4 py-3">
+                    <button
+                      type="button"
+                      disabled={isDisabled}
+                      onClick={() => {
+                        if (record.kind === "history") {
+                          setRecordsOpen(false);
+                          void loadSession(record.id);
+                        }
+                      }}
+                      className={`min-w-0 flex-1 text-left transition-colors ${
+                        isDisabled
+                          ? "cursor-not-allowed opacity-60"
+                          : "hover:text-slate-950 active:text-slate-950"
+                      }`}
+                    >
+                      <div className="mb-1 flex items-center gap-3">
+                        <span
+                          className={`app-mono inline-flex rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-[0.18em] ${badgeClass}`}
+                        >
+                          {record.badgeLabel}
+                        </span>
+                      </div>
+                      <h3 className="truncate text-sm font-semibold text-slate-900">
+                        {record.title}
+                      </h3>
+                    </button>
+                    <div className="flex shrink-0 flex-col items-end gap-2">
                       <span className="app-mono text-[10px] tracking-[0.12em] text-slate-400">
                         {formatSidebarDate(record.createdAt)}
                       </span>
+                      {record.kind === "history" && record.audioUrl ? (
+                        <button
+                          type="button"
+                          onClick={() => void openRecordingInExplorer(record.id)}
+                          className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-400 transition-colors hover:border-slate-300 hover:text-slate-600"
+                          aria-label={`Open ${record.title} in Explorer`}
+                        >
+                          {openingRecordingId === record.id ? (
+                            <LoaderCircle className="size-3.5 animate-spin" />
+                          ) : (
+                            <FolderOpen className="size-3.5" />
+                          )}
+                        </button>
+                      ) : (
+                        <div aria-hidden className="h-7 w-7" />
+                      )}
                     </div>
-                    <h3 className="truncate text-sm font-semibold text-slate-900">
-                      {record.title}
-                    </h3>
-                  </button>
+                  </div>
                 </div>
               );
             })

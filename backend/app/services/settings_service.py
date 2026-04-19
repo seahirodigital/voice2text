@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
+import shutil
 
 from moonshine_voice import ModelArch, supported_languages
 from moonshine_voice.download import find_model_info
@@ -49,6 +51,13 @@ class SettingsService:
         return load_settings()
 
     def update_settings(self, settings: AppSettings) -> SettingsResponse:
+        current_settings = load_settings()
+        current_paths = resolve_paths(current_settings)
+        next_paths = resolve_paths(settings)
+        self._migrate_recordings_root(
+            Path(current_paths.temp_recordings_root),
+            Path(next_paths.temp_recordings_root),
+        )
         save_settings(settings)
         return self.get_settings_response()
 
@@ -64,3 +73,17 @@ class SettingsService:
             defaultModelPreset=settings.transcription.model_preset,
         )
 
+    @staticmethod
+    def _migrate_recordings_root(current_root: Path, next_root: Path) -> None:
+        if current_root == next_root or not current_root.exists():
+            return
+
+        next_root.mkdir(parents=True, exist_ok=True)
+
+        for item in current_root.iterdir():
+            target = next_root / item.name
+            if target.exists():
+                raise ValueError(
+                    f"Cannot move recordings because {target} already exists."
+                )
+            shutil.move(str(item), str(target))

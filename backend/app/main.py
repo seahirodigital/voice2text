@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from pathlib import Path
+import subprocess
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -52,6 +53,48 @@ def get_frontend_dist() -> Path:
     return Path(paths.frontend_dist)
 
 
+def open_in_explorer(path: Path) -> None:
+    if path.is_file():
+        subprocess.run(["explorer", "/select,", str(path)], check=False)
+        return
+    subprocess.run(["explorer", str(path)], check=False)
+
+
+def open_windows_directory_picker(initial_dir: Path) -> str | None:
+    script = """
+Add-Type -AssemblyName System.Windows.Forms
+$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+$dialog.Description = 'Select recording destination'
+$dialog.UseDescriptionForTitle = $true
+if ($args.Length -gt 0 -and $args[0] -and (Test-Path $args[0])) {
+    $dialog.SelectedPath = $args[0]
+}
+if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    Write-Output $dialog.SelectedPath
+}
+"""
+    result = subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-STA",
+            "-Command",
+            script,
+            str(initial_dir),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    if result.returncode != 0:
+        message = result.stderr.strip() or "Unable to open the Windows folder picker."
+        raise RuntimeError(message)
+    selected = result.stdout.strip()
+    return selected or None
+
+
 @app.get("/api/health")
 async def health_check() -> dict[str, str]:
     return {"status": "ok"}
@@ -64,7 +107,10 @@ async def read_settings():
 
 @app.put("/api/settings")
 async def write_settings(settings: AppSettings):
-    return settings_service.update_settings(settings)
+    try:
+        return settings_service.update_settings(settings)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/meta")
@@ -112,6 +158,40 @@ async def delete_session(session_id: str):
     if not store.delete_session(session_id):
         raise HTTPException(status_code=404, detail="Session not found")
     return JSONResponse({"deleted": True})
+
+
+@app.post("/api/sessions/{session_id}/open-recording")
+async def open_session_recording(session_id: str):
+    store = get_store()
+    detail = store.get_session(session_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if not detail.audio_url:
+        raise HTTPException(status_code=404, detail="Recording not found")
+
+    recording_path = store.recordings_root / Path(detail.audio_url).name
+    if not recording_path.exists():
+        raise HTTPException(status_code=404, detail="Recording not found")
+
+    try:
+        await asyncio.to_thread(open_in_explorer, recording_path)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return JSONResponse({"opened": True})
+
+
+@app.post("/api/system/pick-recordings-root")
+async def pick_recordings_root():
+    settings = settings_service.get_settings()
+    paths = resolve_paths(settings)
+    try:
+        selected_path = await asyncio.to_thread(
+            open_windows_directory_picker,
+            Path(paths.temp_recordings_root),
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return JSONResponse({"path": selected_path})
 
 
 @app.get("/recordings/{filename}")

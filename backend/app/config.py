@@ -19,9 +19,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "transcription": {
         "language": "ja",
-        "modelPreset": "tiny",
+        "modelPreset": "base",
         "maxSpeakers": 3,
-        "updateIntervalMs": 400,
+        "updateIntervalMs": 5000,
         "enableWordTimestamps": False,
     },
     "apiSettings": {
