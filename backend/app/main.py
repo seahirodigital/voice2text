@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from app.config import resolve_paths
 from app.models.schemas import (
     AppSettings,
+    SessionTitleUpdatePayload,
     StartSessionPayload,
     TranscriptUpdatePayload,
     WebSocketEnvelope,
@@ -90,6 +91,15 @@ async def get_session(session_id: str):
 async def update_session_transcript(session_id: str, payload: TranscriptUpdatePayload):
     store = get_store()
     detail = store.update_transcript(session_id, payload.segments)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return detail
+
+
+@app.put("/api/sessions/{session_id}/title")
+async def update_session_title(session_id: str, payload: SessionTitleUpdatePayload):
+    store = get_store()
+    detail = store.update_session_title(session_id, payload.title)
     if detail is None:
         raise HTTPException(status_code=404, detail="Session not found")
     return detail

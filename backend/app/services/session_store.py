@@ -1,10 +1,19 @@
 from __future__ import annotations
 
 import json
+import re
 import wave
 from pathlib import Path
 
-from app.models.schemas import SessionDetail, SessionSummary, TranscriptSegment
+from app.models.schemas import (
+    SessionDetail,
+    SessionSummary,
+    TranscriptSegment,
+    utc_now_iso,
+)
+
+DEFAULT_SESSION_TITLE = "New Transcript"
+INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
 class SessionStore:
@@ -51,7 +60,29 @@ class SessionStore:
         detail.segments = segments
         detail.updated_at = segments[-1].updated_at if segments else detail.updated_at
         detail.line_count = len(segments)
-        detail.title = self._derive_title(segments)
+        if not detail.title_locked:
+            detail.title = self._derive_title(segments)
+        summary = self.save_session(detail)
+        return SessionDetail.model_validate(
+            {
+                **detail.model_dump(by_alias=True),
+                **summary.model_dump(by_alias=True),
+            }
+        )
+
+    def update_session_title(self, session_id: str, title: str) -> SessionDetail | None:
+        detail = self.get_session(session_id)
+        if detail is None:
+            return None
+
+        normalized_title = self._normalize_title(title)
+        detail.title = normalized_title
+        detail.title_locked = True
+        detail.updated_at = utc_now_iso()
+
+        if detail.audio_url:
+            detail.audio_url = self._rename_recording(detail.audio_url, normalized_title)
+
         summary = self.save_session(detail)
         return SessionDetail.model_validate(
             {
@@ -84,8 +115,9 @@ class SessionStore:
         pcm_bytes: bytes,
         sample_rate: int,
         channels: int = 1,
+        title: str | None = None,
     ) -> str:
-        wav_path = self.recordings_root / f"{session_id}.wav"
+        wav_path = self._unique_recording_path(title or session_id)
         with wave.open(str(wav_path), "wb") as wav_file:
             wav_file.setnchannels(channels)
             wav_file.setsampwidth(2)
@@ -109,6 +141,46 @@ class SessionStore:
     @staticmethod
     def _derive_title(segments: list[TranscriptSegment]) -> str:
         if not segments:
-            return "新しい文字起こし"
-        first_text = segments[0].text.strip() or "新しい文字起こし"
+            return DEFAULT_SESSION_TITLE
+        first_text = segments[0].text.strip() or DEFAULT_SESSION_TITLE
         return first_text[:40]
+
+    @staticmethod
+    def _normalize_title(title: str) -> str:
+        normalized = " ".join(title.split()).strip()
+        return (normalized or DEFAULT_SESSION_TITLE)[:120]
+
+    @classmethod
+    def _safe_filename_stem(cls, title: str) -> str:
+        sanitized = INVALID_FILENAME_CHARS.sub("", title).strip().rstrip(".")
+        sanitized = re.sub(r"\s+", " ", sanitized)
+        return (sanitized or DEFAULT_SESSION_TITLE)[:80]
+
+    def _unique_recording_path(self, title: str, current_path: Path | None = None) -> Path:
+        stem = self._safe_filename_stem(title)
+        candidate = self.recordings_root / f"{stem}.wav"
+        if current_path is not None and candidate == current_path:
+            return candidate
+        if not candidate.exists():
+            return candidate
+
+        suffix = 2
+        while True:
+            candidate = self.recordings_root / f"{stem}-{suffix}.wav"
+            if current_path is not None and candidate == current_path:
+                return candidate
+            if not candidate.exists():
+                return candidate
+            suffix += 1
+
+    def _rename_recording(self, audio_url: str, title: str) -> str:
+        current_path = self.recordings_root / Path(audio_url).name
+        if not current_path.exists():
+            return audio_url
+
+        target_path = self._unique_recording_path(title, current_path=current_path)
+        if target_path == current_path:
+            return audio_url
+
+        current_path.rename(target_path)
+        return f"/recordings/{target_path.name}"

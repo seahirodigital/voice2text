@@ -9,6 +9,7 @@ import {
   LoaderCircle,
   Mic,
   MicOff,
+  Pencil,
   RefreshCcw,
   Save,
   Search,
@@ -28,7 +29,7 @@ import {
 
 import { WaveformCanvas } from "./components/waveform-canvas";
 import { Button } from "./components/ui/button";
-import { formatClock, transcriptToPlainText } from "./lib/utils";
+import { transcriptToPlainText } from "./lib/utils";
 import type {
   AppSettings,
   MetaResponse,
@@ -61,15 +62,6 @@ const STATUS_LABELS: Record<RecordingStatus, string> = {
   paused: "Paused",
   saving: "Saving",
   error: "Error",
-};
-
-const STATUS_HINTS: Record<RecordingStatus, string> = {
-  idle: "The workspace is ready for a new capture.",
-  connecting: "Opening the local microphone stream and websocket.",
-  recording: "The transcript is updating in real time from the live input.",
-  paused: "Capture is paused. Resume or stop to save the record.",
-  saving: "Finalizing the local audio and session metadata.",
-  error: "The last capture failed. Check the message and retry.",
 };
 
 const SPEAKER_SOURCE_LABELS: Record<string, string> = {
@@ -169,6 +161,20 @@ function toHistoryRecord(session: SessionSummary): RecordView {
   };
 }
 
+function toSessionSummary(detail: SessionDetail): SessionSummary {
+  return {
+    id: detail.id,
+    createdAt: detail.createdAt,
+    updatedAt: detail.updatedAt,
+    language: detail.language,
+    deviceLabel: detail.deviceLabel,
+    durationSeconds: detail.durationSeconds,
+    lineCount: detail.lineCount,
+    title: detail.title,
+    audioUrl: detail.audioUrl ?? null,
+  };
+}
+
 function parseDate(value?: string | null) {
   if (!value) {
     return null;
@@ -247,6 +253,11 @@ function sanitizeFilename(value: string) {
   );
 }
 
+function normalizeTitleInput(value: string, fallback: string) {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized || fallback;
+}
+
 function recordMatchesFilter(record: RecordView, filterText: string) {
   const query = filterText.trim().toLowerCase();
   if (!query) {
@@ -292,6 +303,10 @@ function App() {
   const [liveSessionStartedAt, setLiveSessionStartedAt] = useState<string | null>(
     null,
   );
+  const [liveTitleOverride, setLiveTitleOverride] = useState<string | null>(null);
+  const [titleDraft, setTitleDraft] = useState("");
+  const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const [savingTitle, setSavingTitle] = useState(false);
 
   const deferredSegments = useDeferredValue(timelineSegments);
 
@@ -310,6 +325,7 @@ function App() {
   const timelineSegmentsRef = useRef<TranscriptSegment[]>([]);
   const statusRef = useRef<RecordingStatus>("idle");
   const isLiveSessionRef = useRef(false);
+  const pendingLiveTitleRef = useRef<string | null>(null);
   const bootstrapApplicationRef = useRef<() => Promise<void>>(async () => {});
   const refreshDevicesRef = useRef<() => Promise<void>>(async () => {});
   const teardownAudioRef = useRef<() => Promise<void>>(async () => {});
@@ -364,6 +380,7 @@ function App() {
   const loadSession = async (sessionId: string) => {
     const detail = await apiFetch<SessionDetail>(`/api/sessions/${sessionId}`);
     dirtySegmentIdsRef.current.clear();
+    setIsEditingTitle(false);
     startTransition(() => {
       setSelectedSessionId(sessionId);
       setTimelineSegments(sortSegments(detail.segments));
@@ -381,6 +398,25 @@ function App() {
     });
     dirtySegmentIdsRef.current.clear();
     await refreshHistory();
+  };
+
+  const updateSessionTitle = async (sessionId: string, title: string) => {
+    const detail = await apiFetch<SessionDetail>(`/api/sessions/${sessionId}/title`, {
+      method: "PUT",
+      body: JSON.stringify({ title }),
+    });
+    startTransition(() => {
+      setHistory((current) => {
+        const summary = toSessionSummary(detail);
+        const next = current.filter((entry) => entry.id !== detail.id);
+        next.unshift(summary);
+        return next;
+      });
+      setSelectedSessionId(detail.id);
+      setTimelineSegments(sortSegments(detail.segments));
+      setCurrentAudioUrl(detail.audioUrl ?? null);
+    });
+    return detail;
   };
 
   const bootstrapApplication = async () => {
@@ -531,7 +567,15 @@ function App() {
         await refreshHistory();
       }
 
-      await loadSession(session.id);
+      const pendingTitle = pendingLiveTitleRef.current?.trim();
+      if (pendingTitle && pendingTitle !== session.title) {
+        const updatedDetail = await updateSessionTitle(session.id, pendingTitle);
+        setTitleDraft(updatedDetail.title);
+      } else {
+        await loadSession(session.id);
+      }
+      pendingLiveTitleRef.current = null;
+      setLiveTitleOverride(null);
       setCurrentSessionId(session.id);
       setStatus("idle");
       setError(null);
@@ -545,6 +589,7 @@ function App() {
       setError(String(message.payload.message ?? "Unknown websocket error"));
       isLiveSessionRef.current = false;
       setLiveSessionStartedAt(null);
+      pendingLiveTitleRef.current = null;
       await teardownAudio();
       closeSocket();
     }
@@ -617,7 +662,10 @@ function App() {
     dirtySegmentIdsRef.current.clear();
     isLiveSessionRef.current = true;
     setTimelineSegments([]);
+    setIsEditingTitle(false);
     setLiveSessionStartedAt(new Date().toISOString());
+    setLiveTitleOverride(null);
+    pendingLiveTitleRef.current = null;
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -757,6 +805,8 @@ function App() {
       closeSocket();
       isLiveSessionRef.current = false;
       setLiveSessionStartedAt(null);
+      pendingLiveTitleRef.current = null;
+      setLiveTitleOverride(null);
     }
   };
 
@@ -891,6 +941,10 @@ function App() {
     ["tiny"];
   const appReady = Boolean(draftSettings && meta);
   const hasActiveCapture = status !== "idle" && status !== "error";
+  const generatedLiveTitle =
+    currentSessionId !== null
+      ? `Live Record ${currentSessionId.slice(0, 6)}`
+      : "Live Record";
   const totalDuration = deferredSegments.at(-1)
     ? deferredSegments.at(-1)!.startedAt + deferredSegments.at(-1)!.duration
     : 0;
@@ -903,17 +957,14 @@ function App() {
   const liveRecord: RecordView | null = hasActiveCapture
     ? {
         id: LIVE_RECORD_ID,
-        title:
-          currentSessionId !== null
-            ? `Live Record ${currentSessionId.slice(0, 6)}`
-            : "Live Record",
+        title: liveTitleOverride?.trim() || generatedLiveTitle,
         createdAt: liveSessionStartedAt ?? new Date().toISOString(),
         language: draftSettings?.transcription.language ?? "ja",
         deviceLabel: selectedDevice?.label || "Current microphone",
         durationSeconds: totalDuration,
         lineCount: timelineSegments.length,
         audioUrl: null,
-        summary: STATUS_HINTS[status],
+        summary: selectedDevice?.label || "Live capture",
         badgeLabel: STATUS_LABELS[status],
         kind: "live",
       }
@@ -932,6 +983,47 @@ function App() {
   const transcriptAvailable = timelineSegments.length > 0;
   const showAudioPlayer = Boolean(currentAudioUrl && status === "idle");
   const canDeleteSelectedSession = Boolean(selectedSessionId && !hasActiveCapture);
+  const activeTitle = activeRecord?.title ?? "Voice2Text Workspace";
+
+  const beginTitleEdit = () => {
+    setTitleDraft(activeTitle);
+    setIsEditingTitle(true);
+  };
+
+  const cancelTitleEdit = () => {
+    setTitleDraft(activeTitle);
+    setIsEditingTitle(false);
+  };
+
+  const saveTitle = async () => {
+    const nextTitle = normalizeTitleInput(titleDraft, activeTitle);
+    setTitleDraft(nextTitle);
+    setSavingTitle(true);
+
+    try {
+      if (hasActiveCapture) {
+        setLiveTitleOverride(nextTitle);
+        pendingLiveTitleRef.current = nextTitle;
+        setIsEditingTitle(false);
+        return;
+      }
+
+      if (!selectedSessionId) {
+        setIsEditingTitle(false);
+        return;
+      }
+
+      const detail = await updateSessionTitle(selectedSessionId, nextTitle);
+      setTitleDraft(detail.title);
+      setIsEditingTitle(false);
+    } catch (saveError) {
+      setError(
+        saveError instanceof Error ? saveError.message : "Failed to save the title.",
+      );
+    } finally {
+      setSavingTitle(false);
+    }
+  };
 
   return (
     <div className="flex h-screen overflow-hidden bg-white text-slate-900">
@@ -1111,6 +1203,24 @@ function App() {
             })
           )}
         </div>
+
+        <div className="border-t border-slate-200 px-4 py-4">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-slate-400">
+            Recorded Audio
+          </p>
+          {showAudioPlayer ? (
+            <>
+              <p className="mt-1 truncate text-sm font-medium text-slate-900">
+                {selectedHistoryRecord?.title ?? activeTitle}
+              </p>
+              <audio controls className="mt-3 w-full" src={currentAudioUrl ?? ""} />
+            </>
+          ) : (
+            <p className="mt-2 text-sm leading-6 text-slate-500">
+              Select a saved record to listen to the captured audio.
+            </p>
+          )}
+        </div>
       </aside>
 
       <section className="flex min-w-0 flex-1 flex-col overflow-hidden">
@@ -1125,9 +1235,64 @@ function App() {
               <FolderOpen className="size-5" />
             </button>
             <div className="min-w-0">
-              <h1 className="truncate text-lg font-bold text-slate-900">
-                {activeRecord?.title ?? "Voice2Text Workspace"}
-              </h1>
+              <div className="flex min-w-0 items-center gap-2">
+                {isEditingTitle ? (
+                  <input
+                    value={titleDraft}
+                    onChange={(event) => setTitleDraft(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        void saveTitle();
+                      }
+                      if (event.key === "Escape") {
+                        event.preventDefault();
+                        cancelTitleEdit();
+                      }
+                    }}
+                    className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-lg font-bold text-slate-900 outline-none focus:border-[#007aff] focus:ring-4 focus:ring-[#007aff]/10"
+                    placeholder="Session title"
+                  />
+                ) : (
+                  <h1 className="truncate text-lg font-bold text-slate-900">
+                    {activeTitle}
+                  </h1>
+                )}
+                {isEditingTitle ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => void saveTitle()}
+                      disabled={savingTitle}
+                      className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition-colors hover:border-slate-300 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
+                      aria-label="Save title"
+                    >
+                      {savingTitle ? (
+                        <LoaderCircle className="size-4 animate-spin" />
+                      ) : (
+                        <Save className="size-4" />
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={cancelTitleEdit}
+                      className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition-colors hover:border-slate-300 hover:text-slate-700"
+                      aria-label="Cancel title edit"
+                    >
+                      <X className="size-4" />
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={beginTitleEdit}
+                    className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition-colors hover:border-slate-300 hover:text-slate-700"
+                    aria-label="Edit title"
+                  >
+                    <Pencil className="size-4" />
+                  </button>
+                )}
+              </div>
               <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-slate-500">
                 <span>{activeRecord?.deviceLabel ?? "Select a microphone to begin."}</span>
                 <span className="hidden h-4 w-px bg-slate-200 sm:block" />
@@ -1193,172 +1358,84 @@ function App() {
         </header>
 
         <div className="app-scrollbar flex-1 overflow-y-auto px-4 py-6 sm:px-6 lg:px-8">
-          <div className="mx-auto w-full max-w-6xl pb-10">
-            <div className="mb-6 grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
-              <section className="rounded-2xl border border-slate-200 bg-[#fbfcff] p-5">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-slate-400">
-                      Capture Overview
-                    </p>
-                    <h2 className="mt-1 text-sm font-semibold text-slate-900">
-                      Local microphone transcription workspace
-                    </h2>
-                  </div>
-                  <span className="app-mono inline-flex rounded-full border border-blue-100 bg-blue-50 px-3 py-1 text-[11px] uppercase tracking-[0.18em] text-[#007aff]">
-                    {STATUS_LABELS[status]}
-                  </span>
-                </div>
-
-                <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                  <div className="rounded-xl border border-slate-200 bg-white p-4">
-                    <p className="text-[11px] uppercase tracking-[0.24em] text-slate-400">
-                      Language
-                    </p>
-                    <p className="mt-2 text-sm font-semibold text-slate-900">
-                      {LANGUAGE_LABELS[draftSettings?.transcription.language ?? "ja"] ??
-                        (draftSettings?.transcription.language ?? "ja")}
-                    </p>
-                  </div>
-                  <div className="rounded-xl border border-slate-200 bg-white p-4">
-                    <p className="text-[11px] uppercase tracking-[0.24em] text-slate-400">
-                      Model
-                    </p>
-                    <p className="mt-2 text-sm font-semibold text-slate-900">
-                      {draftSettings?.transcription.modelPreset ?? "tiny"}
-                    </p>
-                  </div>
-                  <div className="rounded-xl border border-slate-200 bg-white p-4">
-                    <p className="text-[11px] uppercase tracking-[0.24em] text-slate-400">
-                      Speakers
-                    </p>
-                    <p className="mt-2 text-sm font-semibold text-slate-900">
-                      Up to {draftSettings?.transcription.maxSpeakers ?? 3}
-                    </p>
-                  </div>
-                  <div className="rounded-xl border border-slate-200 bg-white p-4">
-                    <p className="text-[11px] uppercase tracking-[0.24em] text-slate-400">
-                      Segments
-                    </p>
-                    <p className="mt-2 text-sm font-semibold text-slate-900">
-                      {timelineSegments.length}
-                    </p>
-                  </div>
-                </div>
-              </section>
-
-              <section className="rounded-2xl border border-slate-200 bg-white p-5">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-slate-400">
-                  Record Details
-                </p>
-                {showAudioPlayer ? (
-                  <>
-                    <p className="mt-2 text-sm font-semibold text-slate-900">
-                      Recorded audio
-                    </p>
-                    <p className="mt-1 text-sm text-slate-500">
-                      Review the saved local audio while editing the transcript.
-                    </p>
-                    <audio controls className="mt-4 w-full" src={currentAudioUrl ?? ""} />
-                  </>
-                ) : (
-                  <div className="mt-3 space-y-3 text-sm leading-6 text-slate-500">
-                    <p>
-                      Microphone: {selectedDevice?.label || "No microphone selected"}
-                    </p>
-                    <p>Duration: {formatClock(totalDuration)}</p>
-                    <p>
-                      Recordings path:{" "}
-                      {settingsResponse?.resolvedPaths.tempRecordingsRoot ?? "--"}
-                    </p>
-                  </div>
-                )}
-              </section>
+          <div className="mx-auto w-full max-w-[1380px] pb-10">
+            <div className="hidden grid-cols-[88px_112px_minmax(0,1fr)] gap-6 border-b border-slate-200 pb-3 text-[10px] font-bold uppercase tracking-[0.24em] text-slate-400 lg:grid">
+              <div>Speaker</div>
+              <div>Time</div>
+              <div>Transcript Text</div>
             </div>
 
-            <section className="rounded-2xl border border-slate-200 bg-white">
-              <div className="hidden grid-cols-[96px_140px_minmax(0,1fr)] gap-8 border-b border-slate-100 px-6 py-4 text-[10px] font-bold uppercase tracking-[0.24em] text-slate-400 lg:grid">
-                <div>Speaker</div>
-                <div>Time</div>
-                <div>Transcript Text</div>
-              </div>
-
-              <div className="space-y-4 p-4 lg:p-6">
-                <AnimatePresence initial={false}>
-                  {deferredSegments.length === 0 ? (
-                    <motion.div
-                      initial={{ opacity: 0, y: 16 }}
+            <div>
+              <AnimatePresence initial={false}>
+                {deferredSegments.length === 0 ? (
+                  <motion.div
+                    initial={{ opacity: 0, y: 16 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -10 }}
+                    className="py-14 text-center text-sm leading-7 text-slate-500"
+                  >
+                    The transcript will appear here once a live capture starts or an
+                    existing record is opened.
+                  </motion.div>
+                ) : (
+                  deferredSegments.map((segment) => (
+                    <motion.article
+                      key={segment.id}
+                      layout
+                      initial={{ opacity: 0, y: 8 }}
                       animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -10 }}
-                      className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-6 py-14 text-center text-sm leading-7 text-slate-500"
+                      exit={{ opacity: 0, y: -8 }}
+                      transition={{ duration: 0.18, ease: "easeOut" }}
+                      className="border-b border-slate-100 py-4 lg:grid lg:grid-cols-[88px_112px_minmax(0,1fr)] lg:gap-6"
                     >
-                      The transcript will appear here once a live capture starts or an
-                      existing record is opened.
-                    </motion.div>
-                  ) : (
-                    deferredSegments.map((segment) => (
-                      <motion.article
-                        key={segment.id}
-                        layout
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: -10 }}
-                        transition={{ duration: 0.2, ease: "easeOut" }}
-                        className="rounded-2xl border border-slate-200 bg-white p-4 shadow-[0_1px_2px_rgba(15,23,42,0.04)] lg:grid lg:grid-cols-[96px_140px_minmax(0,1fr)] lg:gap-8"
-                      >
-                        <div className="flex items-start justify-between gap-3 lg:block">
-                          <div>
-                            <p className="text-xs font-semibold text-slate-900">
-                              {segment.speakerLabel}
-                            </p>
-                            <p className="mt-1 text-[11px] uppercase tracking-[0.18em] text-slate-400">
-                              {SPEAKER_SOURCE_LABELS[segment.speakerSource] ??
-                                segment.speakerSource}
-                            </p>
-                          </div>
-                          <span className="app-mono rounded bg-blue-50 px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-[#007aff] lg:hidden">
-                            {formatLongClock(segment.startedAt)}
-                          </span>
-                        </div>
-
-                        <div className="mt-3 app-mono text-[11px] text-slate-400 lg:mt-0">
-                          <p className="font-semibold text-slate-500">
-                            {formatLongClock(segment.startedAt)}
+                      <div className="flex items-start justify-between gap-3 lg:block">
+                        <div>
+                          <p className="text-sm font-semibold text-slate-900">
+                            {segment.speakerLabel}
                           </p>
-                          <p className="mt-1 opacity-70">
-                            {formatRangeClock(segment.startedAt, segment.duration)}
+                          <p className="mt-1 text-[10px] uppercase tracking-[0.18em] text-slate-400">
+                            {SPEAKER_SOURCE_LABELS[segment.speakerSource] ??
+                              segment.speakerSource}
                           </p>
                         </div>
+                        <span className="app-mono text-[11px] font-semibold text-slate-500 lg:hidden">
+                          {formatLongClock(segment.startedAt)}
+                        </span>
+                      </div>
 
-                        <div className="mt-4 lg:mt-0">
-                          <textarea
-                            value={segment.text}
-                            rows={Math.max(3, Math.ceil(segment.text.length / 60))}
-                            onChange={(event) =>
-                              onSegmentEdit(segment.id, event.target.value)
-                            }
-                            className="min-h-24 w-full resize-y rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-[15px] leading-7 text-slate-800 outline-none transition focus:border-[#007aff] focus:bg-white focus:ring-4 focus:ring-[#007aff]/10"
-                          />
-                          <div className="mt-3 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-400">
-                            <span>
-                              latency {segment.latencyMs}ms |{" "}
-                              {segment.isComplete ? "complete" : "updating"}
-                            </span>
-                            <span>{new Date(segment.updatedAt).toLocaleTimeString()}</span>
-                          </div>
-                        </div>
-                      </motion.article>
-                    ))
-                  )}
-                </AnimatePresence>
-              </div>
-            </section>
+                      <div className="mt-2 app-mono text-[11px] text-slate-400 lg:mt-0">
+                        <p className="font-semibold text-slate-500">
+                          {formatLongClock(segment.startedAt)}
+                        </p>
+                        <p className="mt-1">
+                          {formatRangeClock(segment.startedAt, segment.duration)}
+                        </p>
+                      </div>
+
+                      <div className="mt-3 min-w-0 lg:mt-0">
+                        <textarea
+                          value={segment.text}
+                          rows={Math.max(
+                            1,
+                            Math.ceil(Math.max(segment.text.length, 1) / 120),
+                          )}
+                          onChange={(event) =>
+                            onSegmentEdit(segment.id, event.target.value)
+                          }
+                          className="w-full resize-none border-0 bg-transparent px-0 py-0 text-[15px] leading-8 text-slate-900 outline-none transition focus:bg-[#f8fbff]"
+                        />
+                      </div>
+                    </motion.article>
+                  ))
+                )}
+              </AnimatePresence>
+            </div>
           </div>
         </div>
 
         <footer className="border-t border-slate-200 bg-white px-4 py-4 shadow-[0_-4px_20px_rgba(15,23,42,0.03)] sm:px-6 lg:px-8">
-          <div className="mx-auto flex w-full max-w-6xl flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-            <div className="flex items-center gap-3 xl:w-[17rem]">
+          <div className="mx-auto flex w-full max-w-[1380px] flex-wrap items-center gap-4">
+            <div className="flex items-center gap-3">
               <div
                 className={`h-2.5 w-2.5 rounded-full ${
                   status === "recording"
@@ -1370,72 +1447,68 @@ function App() {
                         : "bg-slate-300"
                 }`}
               />
-              <div>
-                <p className="text-[11px] font-bold uppercase tracking-[0.28em] text-slate-900">
-                  {STATUS_LABELS[status]}
-                </p>
-                <p className="text-xs text-slate-500">{STATUS_HINTS[status]}</p>
-              </div>
+              <p className="text-[11px] font-bold uppercase tracking-[0.28em] text-slate-900">
+                {STATUS_LABELS[status]}
+              </p>
             </div>
 
-            <div className="flex flex-1 flex-col items-center gap-4 xl:flex-row xl:justify-center">
-              <div className="w-full max-w-[240px]">
-                <WaveformCanvas
-                  samples={waveform}
-                  status={status}
-                  width={560}
-                  height={56}
-                  className="h-14 w-full rounded-xl border border-slate-200 bg-white"
-                />
-              </div>
-              <div className="flex flex-wrap items-center justify-center gap-3">
-                {status === "idle" || status === "error" ? (
-                  <Button onClick={() => void startRecording()} disabled={!appReady}>
-                    {appReady ? (
-                      <Mic className="size-4" />
-                    ) : (
-                      <LoaderCircle className="size-4 animate-spin" />
-                    )}
-                    {appReady ? "Start" : "Waiting"}
-                  </Button>
-                ) : null}
+            <div className="min-w-[200px] flex-1 max-w-[320px]">
+              <WaveformCanvas
+                samples={waveform}
+                status={status}
+                width={560}
+                height={56}
+                className="h-14 w-full rounded-xl border border-slate-200 bg-white"
+              />
+            </div>
 
-                {status === "recording" ? (
-                  <>
-                    <Button variant="secondary" onClick={() => void pauseRecording()}>
-                      <CirclePause className="size-4" />
-                      Pause
-                    </Button>
-                    <Button variant="danger" onClick={() => void stopRecording()}>
-                      <MicOff className="size-4" />
-                      Stop
-                    </Button>
-                  </>
-                ) : null}
-
-                {status === "paused" ? (
-                  <>
-                    <Button variant="secondary" onClick={() => void resumeRecording()}>
-                      <Mic className="size-4" />
-                      Resume
-                    </Button>
-                    <Button variant="danger" onClick={() => void stopRecording()}>
-                      <MicOff className="size-4" />
-                      Stop
-                    </Button>
-                  </>
-                ) : null}
-
-                {status === "connecting" || status === "saving" ? (
-                  <Button disabled>
+            <div className="flex shrink-0 items-center gap-3">
+              {status === "idle" || status === "error" ? (
+                <Button onClick={() => void startRecording()} disabled={!appReady}>
+                  {appReady ? (
+                    <Mic className="size-4" />
+                  ) : (
                     <LoaderCircle className="size-4 animate-spin" />
-                    {status === "connecting" ? "Connecting" : "Saving"}
+                  )}
+                  {appReady ? "Start" : "Waiting"}
+                </Button>
+              ) : null}
+
+              {status === "recording" ? (
+                <>
+                  <Button variant="secondary" onClick={() => void pauseRecording()}>
+                    <CirclePause className="size-4" />
+                    Pause
                   </Button>
-                ) : null}
-              </div>
+                  <Button variant="danger" onClick={() => void stopRecording()}>
+                    <MicOff className="size-4" />
+                    Stop
+                  </Button>
+                </>
+              ) : null}
+
+              {status === "paused" ? (
+                <>
+                  <Button variant="secondary" onClick={() => void resumeRecording()}>
+                    <Mic className="size-4" />
+                    Resume
+                  </Button>
+                  <Button variant="danger" onClick={() => void stopRecording()}>
+                    <MicOff className="size-4" />
+                    Stop
+                  </Button>
+                </>
+              ) : null}
+
+              {status === "connecting" || status === "saving" ? (
+                <Button disabled>
+                  <LoaderCircle className="size-4 animate-spin" />
+                  {status === "connecting" ? "Connecting" : "Saving"}
+                </Button>
+              ) : null}
             </div>
 
-            <div className="flex items-center justify-between xl:w-[17rem] xl:justify-end">
+            <div className="ml-auto flex items-center">
               <span className="app-mono text-2xl font-medium tabular-nums text-slate-900">
                 {formatLongClock(totalDuration)}
               </span>

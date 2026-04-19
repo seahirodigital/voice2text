@@ -102,6 +102,7 @@ class SessionSummary(BaseModel):
     duration_seconds: float = Field(alias="durationSeconds")
     line_count: int = Field(alias="lineCount")
     title: str
+    title_locked: bool = Field(default=False, alias="titleLocked")
     audio_url: str | None = Field(default=None, alias="audioUrl")
 
     model_config = ConfigDict(populate_by_name=True)
@@ -113,6 +114,10 @@ class SessionDetail(SessionSummary):
 
 class TranscriptUpdatePayload(BaseModel):
     segments: list[TranscriptSegment]
+
+
+class SessionTitleUpdatePayload(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
 
 
 class MetaResponse(BaseModel):

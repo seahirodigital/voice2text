@@ -242,11 +242,17 @@ class LiveTranscriptionSession:
                 3,
             )
 
+        derived_title = (
+            ordered_segments[0].text[:40].strip()
+            if ordered_segments and ordered_segments[0].text.strip()
+            else "New Transcript"
+        )
         audio_url = self.store.save_recording(
             self.context.session_id,
             bytes(self.raw_audio),
             self.context.browser_sample_rate,
             self.context.channels,
+            title=derived_title,
         )
         detail = SessionDetail(
             id=self.context.session_id,
@@ -256,7 +262,8 @@ class LiveTranscriptionSession:
             deviceLabel=self.context.device_label,
             durationSeconds=duration_seconds,
             lineCount=len(ordered_segments),
-            title=ordered_segments[0].text[:40] if ordered_segments else "新しい文字起こし",
+            title=derived_title,
+            titleLocked=False,
             audioUrl=audio_url,
             segments=ordered_segments,
         )
