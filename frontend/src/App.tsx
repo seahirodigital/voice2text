@@ -287,6 +287,22 @@ function gainDbToDialAngle(db: number) {
   return INPUT_GAIN_DIAL_START_DEG + ratio * INPUT_GAIN_DIAL_SWEEP_DEG;
 }
 
+function angleToInputGainDb(angle: number) {
+  let normalized = angle - INPUT_GAIN_DIAL_START_DEG;
+  while (normalized < 0) {
+    normalized += 360;
+  }
+  while (normalized > 360) {
+    normalized -= 360;
+  }
+
+  const clamped = Math.min(INPUT_GAIN_DIAL_SWEEP_DEG, normalized);
+  const ratio = clamped / INPUT_GAIN_DIAL_SWEEP_DEG;
+  const nextDb =
+    INPUT_GAIN_MIN_DB + ratio * (INPUT_GAIN_MAX_DB - INPUT_GAIN_MIN_DB);
+  return clampInputGainDb(Math.round(nextDb / INPUT_GAIN_STEP_DB) * INPUT_GAIN_STEP_DB);
+}
+
 function coerceUpdateInterval(value: string, fallback: number) {
   const digits = value.replace(/[^\d]/g, "");
   if (!digits) {
@@ -1340,13 +1356,35 @@ function App() {
     setInputGainDb((current) => clampInputGainDb(current + deltaDb));
   };
 
-  const handleInputGainDialPointerDown = (
-    event: ReactPointerEvent<HTMLButtonElement>,
+  const updateInputGainFromPointer = (
+    element: HTMLButtonElement,
+    clientX: number,
+    clientY: number,
   ) => {
+    const rect = element.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    const angle = (Math.atan2(clientY - centerY, clientX - centerX) * 180) / Math.PI + 90;
+    setInputGainDb(angleToInputGainDb(angle));
+  };
+
+  const handleInputGainDialPointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
     event.preventDefault();
-    const rect = event.currentTarget.getBoundingClientRect();
-    const isRightSide = event.clientX >= rect.left + rect.width / 2;
-    adjustInputGain(isRightSide ? INPUT_GAIN_STEP_DB : -INPUT_GAIN_STEP_DB);
+    event.currentTarget.setPointerCapture(event.pointerId);
+    updateInputGainFromPointer(event.currentTarget, event.clientX, event.clientY);
+  };
+
+  const handleInputGainDialPointerMove = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!event.currentTarget.hasPointerCapture(event.pointerId)) {
+      return;
+    }
+    updateInputGainFromPointer(event.currentTarget, event.clientX, event.clientY);
+  };
+
+  const handleInputGainDialPointerUp = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
   };
 
   const handleInputGainDialKeyDown = (
@@ -1945,7 +1983,12 @@ function App() {
                           onChange={(event) =>
                             onSegmentEdit(segment.id, event.target.value)
                           }
-                          className="w-full resize-none border-0 bg-transparent px-0 py-0 text-[11px] leading-4 text-slate-900 outline-none transition focus:bg-[#f8fbff]"
+                          className="w-full resize-none border-0 bg-transparent px-0 py-0 text-slate-900 outline-none transition focus:bg-[#f8fbff]"
+                          style={{
+                            fontSize: "11px",
+                            fontWeight: 600,
+                            lineHeight: "16px",
+                          }}
                         />
                       </div>
                     </motion.article>
@@ -1963,13 +2006,16 @@ function App() {
               <button
                 type="button"
                 onPointerDown={handleInputGainDialPointerDown}
+                onPointerMove={handleInputGainDialPointerMove}
+                onPointerUp={handleInputGainDialPointerUp}
+                onPointerCancel={handleInputGainDialPointerUp}
                 onKeyDown={handleInputGainDialKeyDown}
-                className="relative h-14 w-14 shrink-0 rounded-full border border-slate-200 shadow-sm outline-none transition hover:border-slate-300 focus:ring-2 focus:ring-[#007aff]/20"
+                className="relative h-14 w-14 shrink-0 touch-none rounded-full border border-slate-200 shadow-sm outline-none transition hover:border-slate-300 focus:ring-2 focus:ring-[#007aff]/20"
                 style={{
                   background: `conic-gradient(from 210deg, rgba(0,122,255,0.95) 0deg ${inputGainSweepDegrees}deg, rgba(226,232,240,0.95) ${inputGainSweepDegrees}deg ${INPUT_GAIN_DIAL_SWEEP_DEG}deg, transparent ${INPUT_GAIN_DIAL_SWEEP_DEG}deg 360deg)`,
                 }}
-                aria-label={`Input gain ${formatInputGainDb(inputGainDb)}. Press right side or arrow right to increase, left side or arrow left to decrease.`}
-                title="Right side: +1 dB / Left side: -1 dB"
+                aria-label={`Input gain ${formatInputGainDb(inputGainDb)}. Drag the knob to adjust gain.`}
+                title="Drag to adjust gain"
               >
                 <span className="absolute inset-1.5 rounded-full bg-white shadow-inner" />
                 <span
@@ -1987,7 +2033,7 @@ function App() {
                 <p className="app-mono mt-1 text-sm font-semibold tabular-nums text-slate-900">
                   {formatInputGainDb(inputGainDb)}
                 </p>
-                <p className="mt-0.5 text-[10px] text-slate-400">Tap right to boost</p>
+                <p className="mt-0.5 text-[10px] text-slate-400">Drag to boost</p>
               </div>
             </div>
 
