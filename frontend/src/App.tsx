@@ -9,6 +9,7 @@ import {
   Mic,
   MicOff,
   Pencil,
+  Play,
   RefreshCcw,
   Save,
   Search,
@@ -44,6 +45,9 @@ const EMPTY_WAVEFORM = Array.from({ length: 96 }, () => 0);
 const LIVE_RECORD_ID = "__live__";
 const MIN_UPDATE_INTERVAL_MS = 100;
 const MAX_UPDATE_INTERVAL_MS = 5000;
+const SEGMENT_AUDIO_PREROLL_SECONDS = 0.2;
+const TRANSCRIPT_GRID_CLASS =
+  "lg:grid lg:grid-cols-[58px_132px_minmax(0,1fr)] lg:gap-4";
 
 const LANGUAGE_LABELS: Record<string, string> = {
   ja: "Japanese",
@@ -242,6 +246,11 @@ function normalizeTitleInput(value: string, fallback: string) {
   return normalized || fallback;
 }
 
+function normalizeSpeakerName(value: string, fallback: string) {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized || fallback;
+}
+
 function clampUpdateInterval(value: number) {
   return Math.min(MAX_UPDATE_INTERVAL_MS, Math.max(MIN_UPDATE_INTERVAL_MS, value));
 }
@@ -327,6 +336,8 @@ function App() {
   const transcriptScrollRef = useRef<HTMLDivElement | null>(null);
   const segmentRowRefs = useRef<Map<string, HTMLElement>>(new Map());
   const lastLiveSegmentIdRef = useRef<string | null>(null);
+  const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
+  const speakerNameOverridesRef = useRef<Map<number, string>>(new Map());
   const statusRef = useRef<RecordingStatus>("idle");
   const isLiveSessionRef = useRef(false);
   const pendingLiveTitleRef = useRef<string | null>(null);
@@ -384,6 +395,7 @@ function App() {
   const loadSession = async (sessionId: string) => {
     const detail = await apiFetch<SessionDetail>(`/api/sessions/${sessionId}`);
     dirtySegmentIdsRef.current.clear();
+    speakerNameOverridesRef.current.clear();
     setIsEditingTitle(false);
     startTransition(() => {
       setSelectedSessionId(sessionId);
@@ -395,10 +407,11 @@ function App() {
   const persistTranscript = async (
     sessionId: string,
     segments: TranscriptSegment[],
+    title?: string,
   ) => {
     await apiFetch<SessionDetail>(`/api/sessions/${sessionId}/transcript`, {
       method: "PUT",
-      body: JSON.stringify({ segments }),
+      body: JSON.stringify({ segments, title }),
     });
     dirtySegmentIdsRef.current.clear();
     await refreshHistory();
@@ -423,6 +436,26 @@ function App() {
         ) {
           throw updateError;
         }
+      }
+    }
+
+    if (!detail) {
+      const transcriptDetail = await apiFetch<SessionDetail>(
+        `/api/sessions/${sessionId}/transcript`,
+        {
+          method: "PUT",
+          body: JSON.stringify({
+            segments: timelineSegmentsRef.current,
+            title,
+          }),
+        },
+      );
+      if (normalizeTitleInput(transcriptDetail.title, transcriptDetail.title) === title) {
+        detail = transcriptDetail;
+      } else {
+        throw new Error(
+          "Title update endpoint is unavailable. Restart the backend and try again.",
+        );
       }
     }
 
@@ -465,6 +498,7 @@ function App() {
       setUpdateIntervalDraft(
         String(settingsPayload.settings.transcription.updateIntervalMs),
       );
+      speakerNameOverridesRef.current.clear();
       setMeta(metaPayload);
       setHistory(sessions);
 
@@ -564,7 +598,11 @@ function App() {
       message.type === "line_text_changed" ||
       message.type === "line_completed"
     ) {
-      const incoming = message.payload as unknown as TranscriptSegment;
+      const incoming = (() => {
+        const segment = message.payload as unknown as TranscriptSegment;
+        const override = speakerNameOverridesRef.current.get(segment.speakerIndex);
+        return override ? { ...segment, speakerLabel: override } : segment;
+      })();
       lastLiveSegmentIdRef.current = incoming.id;
       startTransition(() => {
         setTimelineSegments((current) =>
@@ -692,6 +730,7 @@ function App() {
     setRecordsOpen(false);
     dirtySegmentIdsRef.current.clear();
     isLiveSessionRef.current = true;
+    speakerNameOverridesRef.current.clear();
     setTimelineSegments([]);
     setIsEditingTitle(false);
     setLiveSessionStartedAt(new Date().toISOString());
@@ -966,6 +1005,47 @@ function App() {
     setEditVersion((version) => version + 1);
   };
 
+  const renameSpeaker = (speakerIndex: number, currentLabel: string) => {
+    const requestedName = window.prompt(
+      "Rename this speaker across the transcript",
+      currentLabel,
+    );
+    if (requestedName === null) {
+      return;
+    }
+
+    const nextLabel = normalizeSpeakerName(requestedName, currentLabel);
+    speakerNameOverridesRef.current.set(speakerIndex, nextLabel);
+    setTimelineSegments((current) =>
+      current.map((segment) =>
+        segment.speakerIndex === speakerIndex
+          ? { ...segment, speakerLabel: nextLabel, updatedAt: new Date().toISOString() }
+          : segment,
+      ),
+    );
+    setEditVersion((version) => version + 1);
+  };
+
+  const playSegmentAudio = async (startedAt: number) => {
+    const audio = audioPlayerRef.current;
+    if (!audio || !currentAudioUrl || status !== "idle") {
+      return;
+    }
+
+    const nextTime = Math.max(0, startedAt - SEGMENT_AUDIO_PREROLL_SECONDS);
+    try {
+      audio.pause();
+      audio.currentTime = nextTime;
+      await audio.play();
+    } catch (playError) {
+      setError(
+        playError instanceof Error
+          ? playError.message
+          : "Unable to start audio playback for this segment.",
+      );
+    }
+  };
+
   const updateDraftSettings = (updater: (current: AppSettings) => AppSettings) => {
     setDraftSettings((current) => (current ? updater(current) : current));
   };
@@ -1158,16 +1238,6 @@ function App() {
       >
         <div className="border-b border-slate-200 px-4 py-3">
           <div className="flex items-center gap-2">
-            <label className="relative block flex-1">
-              <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
-              <input
-                type="text"
-                value={recordFilter}
-                onChange={(event) => setRecordFilter(event.target.value)}
-                placeholder="Filter transcripts..."
-                className="w-full rounded-lg border border-slate-200 bg-white py-2 pl-9 pr-3 text-sm outline-none transition focus:border-[#007aff] focus:ring-2 focus:ring-[#007aff]/15"
-              />
-            </label>
             <Button
               className="min-w-[6.75rem] rounded-lg px-3 py-2.5"
               onClick={() => void startRecording()}
@@ -1201,6 +1271,16 @@ function App() {
               <SlidersHorizontal className="size-4" />
             </button>
           </div>
+          <label className="relative mt-3 block">
+            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
+            <input
+              type="text"
+              value={recordFilter}
+              onChange={(event) => setRecordFilter(event.target.value)}
+              placeholder="Filter transcripts..."
+              className="w-full rounded-lg border border-slate-200 bg-white py-2 pl-9 pr-3 text-sm outline-none transition focus:border-[#007aff] focus:ring-2 focus:ring-[#007aff]/15"
+            />
+          </label>
         </div>
 
         <div className="app-scrollbar flex-1 overflow-y-auto">
@@ -1272,7 +1352,12 @@ function App() {
               <p className="mt-1 truncate text-sm font-medium text-slate-900">
                 {selectedHistoryRecord?.title ?? activeTitle}
               </p>
-              <audio controls className="mt-2 w-full" src={currentAudioUrl ?? ""} />
+              <audio
+                ref={audioPlayerRef}
+                controls
+                className="mt-2 w-full"
+                src={currentAudioUrl ?? ""}
+              />
             </>
           ) : (
             <p className="mt-2 text-sm leading-6 text-slate-500">
@@ -1419,7 +1504,9 @@ function App() {
           className="app-scrollbar flex-1 overflow-y-auto px-4 py-6 sm:px-6 lg:px-8"
         >
           <div className="mx-auto w-full max-w-[1380px] pb-10">
-            <div className="hidden grid-cols-[88px_112px_minmax(0,1fr)] gap-6 border-b border-slate-200 pb-3 text-[10px] font-bold uppercase tracking-[0.24em] text-slate-400 lg:grid">
+            <div
+              className={`hidden border-b border-slate-200 pb-3 text-[10px] font-bold uppercase tracking-[0.24em] text-slate-400 ${TRANSCRIPT_GRID_CLASS}`}
+            >
               <div>Speaker</div>
               <div>Time</div>
               <div>Transcript Text</div>
@@ -1453,21 +1540,48 @@ function App() {
                       animate={{ opacity: 1, y: 0 }}
                       exit={{ opacity: 0, y: -8 }}
                       transition={{ duration: 0.18, ease: "easeOut" }}
-                      className="border-b border-slate-100 py-3 lg:grid lg:grid-cols-[88px_112px_minmax(0,1fr)] lg:gap-6"
+                      className={`border-b border-slate-100 py-3 ${TRANSCRIPT_GRID_CLASS}`}
                     >
                       <div className="flex items-start justify-between gap-3 lg:block">
-                        <p className="text-sm font-semibold text-slate-900">
-                          {segment.speakerLabel}
-                        </p>
+                        <div className="flex items-center gap-1">
+                          <p
+                            className="truncate text-sm font-semibold text-slate-900"
+                            title={segment.speakerLabel}
+                          >
+                            {segment.speakerLabel}
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              renameSpeaker(segment.speakerIndex, segment.speakerLabel)
+                            }
+                            className="inline-flex h-5 w-5 items-center justify-center rounded text-slate-300 transition-colors hover:bg-slate-100 hover:text-slate-500"
+                            aria-label={`Rename speaker ${segment.speakerLabel}`}
+                          >
+                            <Pencil className="size-3" />
+                          </button>
+                        </div>
                         <span className="app-mono text-[11px] font-semibold text-slate-500 lg:hidden">
                           {formatLongClock(segment.startedAt)}
                         </span>
                       </div>
 
                       <div className="mt-2 app-mono text-[11px] text-slate-400 lg:mt-0">
-                        <p className="font-semibold text-slate-500">
-                          {formatLongClock(segment.startedAt)}
-                        </p>
+                        <div className="flex items-center gap-2">
+                          <p className="font-semibold text-slate-500">
+                            {formatLongClock(segment.startedAt)}
+                          </p>
+                          {showAudioPlayer ? (
+                            <button
+                              type="button"
+                              onClick={() => void playSegmentAudio(segment.startedAt)}
+                              className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-400 transition-colors hover:border-slate-300 hover:text-slate-600"
+                              aria-label={`Play audio near ${formatLongClock(segment.startedAt)}`}
+                            >
+                              <Play className="ml-0.5 size-3" />
+                            </button>
+                          ) : null}
+                        </div>
                         <p className="mt-1">
                           {formatRangeClock(segment.startedAt, segment.duration)}
                         </p>

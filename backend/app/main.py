@@ -90,7 +90,7 @@ async def get_session(session_id: str):
 @app.put("/api/sessions/{session_id}/transcript")
 async def update_session_transcript(session_id: str, payload: TranscriptUpdatePayload):
     store = get_store()
-    detail = store.update_transcript(session_id, payload.segments)
+    detail = store.update_transcript(session_id, payload.segments, payload.title)
     if detail is None:
         raise HTTPException(status_code=404, detail="Session not found")
     return detail

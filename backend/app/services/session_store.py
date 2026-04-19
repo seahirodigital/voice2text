@@ -51,7 +51,10 @@ class SessionStore:
         return summary
 
     def update_transcript(
-        self, session_id: str, segments: list[TranscriptSegment]
+        self,
+        session_id: str,
+        segments: list[TranscriptSegment],
+        title: str | None = None,
     ) -> SessionDetail | None:
         detail = self.get_session(session_id)
         if detail is None:
@@ -60,7 +63,14 @@ class SessionStore:
         detail.segments = segments
         detail.updated_at = segments[-1].updated_at if segments else detail.updated_at
         detail.line_count = len(segments)
-        if not detail.title_locked:
+        if title is not None:
+            normalized_title = self._normalize_title(title)
+            detail.title = normalized_title
+            detail.title_locked = True
+            detail.updated_at = utc_now_iso()
+            if detail.audio_url:
+                detail.audio_url = self._rename_recording(detail.audio_url, normalized_title)
+        elif not detail.title_locked:
             detail.title = self._derive_title(segments)
         summary = self.save_session(detail)
         return SessionDetail.model_validate(

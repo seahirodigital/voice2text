@@ -114,6 +114,7 @@ class SessionDetail(SessionSummary):
 
 class TranscriptUpdatePayload(BaseModel):
     segments: list[TranscriptSegment]
+    title: str | None = Field(default=None, min_length=1, max_length=120)
 
 
 class SessionTitleUpdatePayload(BaseModel):
