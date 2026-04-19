@@ -27,7 +27,11 @@ import {
   useRef,
   useState,
 } from "react";
-import type { MouseEvent } from "react";
+import type {
+  KeyboardEvent as ReactKeyboardEvent,
+  MouseEvent,
+  PointerEvent as ReactPointerEvent,
+} from "react";
 
 import { WaveformCanvas } from "./components/waveform-canvas";
 import { Button } from "./components/ui/button";
@@ -48,6 +52,11 @@ const LIVE_RECORD_ID = "__live__";
 const MIN_UPDATE_INTERVAL_MS = 100;
 const MAX_UPDATE_INTERVAL_MS = 5000;
 const SEGMENT_AUDIO_PREROLL_SECONDS = 0.2;
+const INPUT_GAIN_MIN_DB = 0;
+const INPUT_GAIN_MAX_DB = 24;
+const INPUT_GAIN_STEP_DB = 1;
+const INPUT_GAIN_DIAL_START_DEG = -150;
+const INPUT_GAIN_DIAL_SWEEP_DEG = 270;
 const TRANSCRIPT_GRID_CLASS =
   "lg:grid lg:grid-cols-[88px_132px_minmax(0,1fr)] lg:gap-4";
 
@@ -259,6 +268,25 @@ function clampUpdateInterval(value: number) {
   return Math.min(MAX_UPDATE_INTERVAL_MS, Math.max(MIN_UPDATE_INTERVAL_MS, value));
 }
 
+function clampInputGainDb(value: number) {
+  return Math.min(INPUT_GAIN_MAX_DB, Math.max(INPUT_GAIN_MIN_DB, value));
+}
+
+function dbToLinearGain(db: number) {
+  return 10 ** (db / 20);
+}
+
+function formatInputGainDb(db: number) {
+  return db === 0 ? "0 dB" : `+${db} dB`;
+}
+
+function gainDbToDialAngle(db: number) {
+  const ratio =
+    (clampInputGainDb(db) - INPUT_GAIN_MIN_DB) /
+    (INPUT_GAIN_MAX_DB - INPUT_GAIN_MIN_DB);
+  return INPUT_GAIN_DIAL_START_DEG + ratio * INPUT_GAIN_DIAL_SWEEP_DEG;
+}
+
 function coerceUpdateInterval(value: string, fallback: number) {
   const digits = value.replace(/[^\d]/g, "");
   if (!digits) {
@@ -311,6 +339,7 @@ function App() {
   const [editVersion, setEditVersion] = useState(0);
   const [recordFilter, setRecordFilter] = useState("");
   const [updateIntervalDraft, setUpdateIntervalDraft] = useState("");
+  const [inputGainDb, setInputGainDb] = useState(INPUT_GAIN_MIN_DB);
   const [sidebarSelectedRecordIds, setSidebarSelectedRecordIds] = useState<string[]>(
     [],
   );
@@ -335,6 +364,7 @@ function App() {
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const inputGainNodeRef = useRef<GainNode | null>(null);
   const analyserNodeRef = useRef<AnalyserNode | null>(null);
   const processorNodeRef = useRef<ScriptProcessorNode | null>(null);
   const sinkNodeRef = useRef<GainNode | null>(null);
@@ -350,6 +380,7 @@ function App() {
   const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
   const speakerNameOverridesRef = useRef<Map<number, string>>(new Map());
   const lastSidebarSelectedRecordIdRef = useRef<string | null>(null);
+  const inputGainDbRef = useRef(INPUT_GAIN_MIN_DB);
   const statusRef = useRef<RecordingStatus>("idle");
   const isLiveSessionRef = useRef(false);
   const pendingLiveTitleRef = useRef<string | null>(null);
@@ -368,6 +399,21 @@ function App() {
   useEffect(() => {
     statusRef.current = status;
   }, [status]);
+
+  useEffect(() => {
+    inputGainDbRef.current = inputGainDb;
+    const audioContext = audioContextRef.current;
+    const inputGain = inputGainNodeRef.current;
+    if (!audioContext || !inputGain) {
+      return;
+    }
+
+    inputGain.gain.setTargetAtTime(
+      dbToLinearGain(inputGainDb),
+      audioContext.currentTime,
+      0.015,
+    );
+  }, [inputGainDb]);
 
   const refreshDevices = async () => {
     if (!navigator.mediaDevices?.enumerateDevices) {
@@ -552,11 +598,13 @@ function App() {
 
     processorNodeRef.current?.disconnect();
     analyserNodeRef.current?.disconnect();
+    inputGainNodeRef.current?.disconnect();
     sourceNodeRef.current?.disconnect();
     sinkNodeRef.current?.disconnect();
 
     processorNodeRef.current = null;
     analyserNodeRef.current = null;
+    inputGainNodeRef.current = null;
     sourceNodeRef.current = null;
     sinkNodeRef.current = null;
 
@@ -768,6 +816,9 @@ function App() {
       audioContextRef.current = audioContext;
 
       const source = audioContext.createMediaStreamSource(stream);
+      const inputGain = audioContext.createGain();
+      inputGain.gain.value = dbToLinearGain(inputGainDbRef.current);
+
       const analyser = audioContext.createAnalyser();
       analyser.fftSize = 2048;
 
@@ -775,12 +826,14 @@ function App() {
       const sink = audioContext.createGain();
       sink.gain.value = 0;
 
-      source.connect(analyser);
+      source.connect(inputGain);
+      inputGain.connect(analyser);
       analyser.connect(processor);
       processor.connect(sink);
       sink.connect(audioContext.destination);
 
       sourceNodeRef.current = source;
+      inputGainNodeRef.current = inputGain;
       analyserNodeRef.current = analyser;
       processorNodeRef.current = processor;
       sinkNodeRef.current = sink;
@@ -1204,6 +1257,11 @@ function App() {
   const showAudioPlayer = Boolean(currentAudioUrl && status === "idle");
   const canDeleteSelectedSession = Boolean(selectedSessionId && !hasActiveCapture);
   const activeTitle = activeRecord?.title ?? "Voice2Text Workspace";
+  const inputGainDialAngle = gainDbToDialAngle(inputGainDb);
+  const inputGainSweepDegrees =
+    ((inputGainDb - INPUT_GAIN_MIN_DB) /
+      (INPUT_GAIN_MAX_DB - INPUT_GAIN_MIN_DB)) *
+    INPUT_GAIN_DIAL_SWEEP_DEG;
   const sidebarHistoryRecordMap = new Map(
     historyRecords.map((record) => [record.id, record] as const),
   );
@@ -1276,6 +1334,37 @@ function App() {
     lastSidebarSelectedRecordIdRef.current = record.id;
     setRecordsOpen(false);
     void loadSession(record.id);
+  };
+
+  const adjustInputGain = (deltaDb: number) => {
+    setInputGainDb((current) => clampInputGainDb(current + deltaDb));
+  };
+
+  const handleInputGainDialPointerDown = (
+    event: ReactPointerEvent<HTMLButtonElement>,
+  ) => {
+    event.preventDefault();
+    const rect = event.currentTarget.getBoundingClientRect();
+    const isRightSide = event.clientX >= rect.left + rect.width / 2;
+    adjustInputGain(isRightSide ? INPUT_GAIN_STEP_DB : -INPUT_GAIN_STEP_DB);
+  };
+
+  const handleInputGainDialKeyDown = (
+    event: ReactKeyboardEvent<HTMLButtonElement>,
+  ) => {
+    if (event.key === "ArrowRight" || event.key === "ArrowUp") {
+      event.preventDefault();
+      adjustInputGain(INPUT_GAIN_STEP_DB);
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowDown") {
+      event.preventDefault();
+      adjustInputGain(-INPUT_GAIN_STEP_DB);
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      setInputGainDb(INPUT_GAIN_MIN_DB);
+    } else if (event.key === "End") {
+      event.preventDefault();
+      setInputGainDb(INPUT_GAIN_MAX_DB);
+    }
   };
 
   useEffect(() => {
@@ -1870,21 +1959,36 @@ function App() {
 
         <footer className="border-t border-slate-200 bg-white px-4 py-4 shadow-[0_-4px_20px_rgba(15,23,42,0.03)] sm:px-6 lg:px-8">
           <div className="mx-auto flex w-full max-w-[1380px] flex-wrap items-center gap-4">
-            <div className="flex items-center gap-3">
-              <div
-                className={`h-2.5 w-2.5 rounded-full ${
-                  status === "recording"
-                    ? "bg-red-500"
-                    : status === "paused"
-                      ? "bg-amber-400"
-                      : status === "error"
-                        ? "bg-rose-500"
-                        : "bg-slate-300"
-                }`}
-              />
-              <p className="text-[11px] font-bold uppercase tracking-[0.28em] text-slate-900">
-                {STATUS_LABELS[status]}
-              </p>
+            <div className="flex min-w-[172px] items-center gap-3">
+              <button
+                type="button"
+                onPointerDown={handleInputGainDialPointerDown}
+                onKeyDown={handleInputGainDialKeyDown}
+                className="relative h-14 w-14 shrink-0 rounded-full border border-slate-200 shadow-sm outline-none transition hover:border-slate-300 focus:ring-2 focus:ring-[#007aff]/20"
+                style={{
+                  background: `conic-gradient(from 210deg, rgba(0,122,255,0.95) 0deg ${inputGainSweepDegrees}deg, rgba(226,232,240,0.95) ${inputGainSweepDegrees}deg ${INPUT_GAIN_DIAL_SWEEP_DEG}deg, transparent ${INPUT_GAIN_DIAL_SWEEP_DEG}deg 360deg)`,
+                }}
+                aria-label={`Input gain ${formatInputGainDb(inputGainDb)}. Press right side or arrow right to increase, left side or arrow left to decrease.`}
+                title="Right side: +1 dB / Left side: -1 dB"
+              >
+                <span className="absolute inset-1.5 rounded-full bg-white shadow-inner" />
+                <span
+                  className="absolute inset-0"
+                  style={{ transform: `rotate(${inputGainDialAngle}deg)` }}
+                >
+                  <span className="absolute left-1/2 top-2 h-5 w-0.5 -translate-x-1/2 rounded-full bg-slate-950" />
+                </span>
+                <span className="absolute left-1/2 top-1/2 h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-slate-950" />
+              </button>
+              <div className="min-w-0">
+                <p className="text-[10px] font-bold uppercase tracking-[0.24em] text-slate-400">
+                  Gain
+                </p>
+                <p className="app-mono mt-1 text-sm font-semibold tabular-nums text-slate-900">
+                  {formatInputGainDb(inputGainDb)}
+                </p>
+                <p className="mt-0.5 text-[10px] text-slate-400">Tap right to boost</p>
+              </div>
             </div>
 
             <div className="min-w-[200px] flex-1 max-w-[320px]">
