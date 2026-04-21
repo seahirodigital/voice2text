@@ -32,7 +32,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         },
     },
     "llm": {
-        "enabled": False,
+        "enabled": True,
         "provider": "ollama",
         "baseUrl": "http://localhost:11434",
         "model": "gemma4:e2b",

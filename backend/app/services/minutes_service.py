@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 
 import numpy as np
@@ -14,6 +15,12 @@ from app.services.ollama_client import OllamaClient
 from app.services.session_store import TARGET_RECORDING_SAMPLE_RATE, SessionStore
 
 TIMELINE_BLOCK_SIZE = 6
+MINUTES_SUMMARY_MODEL = "gemma4:e4b"
+TIMESTAMPED_LINE_RE = re.compile(
+    r"^\s*(?:\[(?P<bracket>\d{2}:\d{2}:\d{2})\]|"
+    r"(?P<plain>\d{2}:\d{2}:\d{2}))\s*(?P<text>.+?)\s*$"
+)
+TIMESTAMPED_ARTIFACT_RE = re.compile(r"(?m)^\s*\[\d{2}:\d{2}:\d{2}\]")
 
 
 def _load_recording_audio(audio_path: Path) -> np.ndarray:
@@ -82,10 +89,35 @@ def _format_timestamp(seconds: float) -> str:
 def _fallback_minutes_markdown(title: str, segments: list[TranscriptSegment]) -> str:
     body = "\n".join(segment.text for segment in segments if segment.text.strip())
     timeline = _segments_to_timeline_text(segments)
+    return _append_timestamped_clean_transcript(
+        _fallback_minutes_body(title=title, body=body),
+        timeline,
+    )
+
+
+def _fallback_minutes_body(*, title: str, body: str) -> str:
+    content = body.strip() or "No transcript was produced."
     return (
         f"# {title}\n\n"
-        "## Refined Transcript\n\n"
-        f"{body.strip() or 'No transcript was produced.'}\n\n"
+        "## Summary\n\n"
+        f"{content}\n\n"
+        "## Key Points\n\n"
+        "- Not generated.\n\n"
+        "## Details\n\n"
+        f"{content}\n\n"
+        "## Action Items\n\n"
+        "- None"
+    )
+
+
+def _append_timestamped_clean_transcript(markdown: str, timeline: str) -> str:
+    body = re.split(
+        r"(?im)^##\s+Timestamped Clean Transcript\s*$",
+        markdown.strip(),
+        maxsplit=1,
+    )[0].strip()
+    return (
+        f"{body}\n\n"
         "## Timestamped Clean Transcript\n\n"
         f"{timeline.strip() or '- No data.'}\n"
     )
@@ -103,42 +135,58 @@ def _block_to_timeline_text(segments: list[TranscriptSegment]) -> str:
     )
 
 
-def _plain_refined_body(refined_blocks: list[str]) -> str:
-    lines = []
-    for block in refined_blocks:
-        for line in block.splitlines():
-            cleaned = line.strip()
-            if not cleaned:
-                continue
-            cleaned = cleaned.split("]", 1)[-1].strip() if "]" in cleaned else cleaned
-            if cleaned:
-                lines.append(cleaned)
-    return "\n".join(lines)
+def _extract_refined_timeline_texts(refined_text: str) -> list[str]:
+    texts: list[str] = []
+    for line in refined_text.splitlines():
+        cleaned = line.strip()
+        if not cleaned:
+            continue
+        match = TIMESTAMPED_LINE_RE.match(cleaned)
+        texts.append((match.group("text") if match else cleaned).strip())
+    return [text for text in texts if text]
 
 
-def _apply_refined_blocks_to_segments(
+def _apply_refined_blocks_to_transcript_segments(
     segments: list[TranscriptSegment],
     refined_blocks: list[str],
-    model: str | None,
 ) -> list[TranscriptSegment]:
     chunks = _blocks(segments, TIMELINE_BLOCK_SIZE)
     now = utc_now_iso()
     for chunk, refined_text in zip(chunks, refined_blocks):
-        if not chunk:
+        refined_lines = _extract_refined_timeline_texts(refined_text)
+        for index, segment in enumerate(chunk):
+            if index < len(refined_lines):
+                segment.text = refined_lines[index]
+            segment.updated_at = now
+    return segments
+
+
+def _is_batch_llm_artifact(segment: TranscriptSegment) -> bool:
+    block_id = segment.llm_block_id or ""
+    if block_id.startswith("minutes-block-"):
+        return True
+    return bool(segment.llm_text and TIMESTAMPED_ARTIFACT_RE.search(segment.llm_text))
+
+
+def _preserve_realtime_llm_columns(
+    segments: list[TranscriptSegment],
+    existing_segments: list[TranscriptSegment],
+) -> list[TranscriptSegment]:
+    for index, segment in enumerate(segments):
+        if index >= len(existing_segments):
             continue
-        start_line_id = chunk[0].line_id
-        end_line_id = chunk[-1].line_id
-        block_id = f"minutes-block-{start_line_id}-{end_line_id}"
-        for segment in chunk:
-            segment.llm_status = "complete"
-            segment.llm_text = refined_text if segment.line_id == start_line_id else ""
-            segment.llm_model = model
-            segment.llm_latency_ms = None
-            segment.llm_updated_at = now
-            segment.llm_error = None
-            segment.llm_block_id = block_id
-            segment.llm_block_start_line_id = start_line_id
-            segment.llm_block_end_line_id = end_line_id
+        existing = existing_segments[index]
+        if _is_batch_llm_artifact(existing):
+            continue
+        segment.llm_text = existing.llm_text
+        segment.llm_status = existing.llm_status
+        segment.llm_model = existing.llm_model
+        segment.llm_latency_ms = existing.llm_latency_ms
+        segment.llm_updated_at = existing.llm_updated_at
+        segment.llm_error = existing.llm_error
+        segment.llm_block_id = existing.llm_block_id
+        segment.llm_block_start_line_id = existing.llm_block_start_line_id
+        segment.llm_block_end_line_id = existing.llm_block_end_line_id
     return segments
 
 
@@ -157,6 +205,10 @@ async def _refine_timeline_blocks(
         result = await client.refine_timeline_block(previous=previous, target=target)
         refined_blocks.append(result.text.strip() or target)
     return refined_blocks
+
+
+def _minutes_summary_settings(llm_settings: LlmSettings) -> LlmSettings:
+    return llm_settings.model_copy(update={"model": MINUTES_SUMMARY_MODEL})
 
 
 async def create_minutes_for_session(
@@ -182,26 +234,29 @@ async def create_minutes_for_session(
     model_path, model_arch, _ = _resolve_model(language, model_preset, models_root)
     transcript = await asyncio.to_thread(_transcribe_audio, model_path, model_arch, audio)
 
+    existing_segments = detail.segments
     segments = _transcript_to_segments(transcript)
     refined_blocks = await _refine_timeline_blocks(llm_settings, segments)
-    model = llm_settings.model if llm_settings.enabled else None
-    segments = _apply_refined_blocks_to_segments(segments, refined_blocks, model)
-    refined_timeline = "\n\n".join(refined_blocks)
-    refined_body = _plain_refined_body(refined_blocks)
-    fallback_markdown = (
-        f"# {detail.title}\n\n"
-        "## Refined Transcript\n\n"
-        f"{refined_body.strip() or 'No transcript was produced.'}\n\n"
-        "## Timestamped Clean Transcript\n\n"
-        f"{refined_timeline.strip() or '- No data.'}\n"
+    segments = _apply_refined_blocks_to_transcript_segments(segments, refined_blocks)
+    segments = _preserve_realtime_llm_columns(segments, existing_segments)
+    refined_timeline = _segments_to_timeline_text(segments)
+    refined_body = "\n".join(segment.text for segment in segments if segment.text.strip())
+    fallback_markdown = _append_timestamped_clean_transcript(
+        _fallback_minutes_body(title=detail.title, body=refined_body),
+        refined_timeline,
     )
 
     if not llm_settings.enabled or llm_settings.provider != "ollama":
         return fallback_markdown, segments, None
 
-    result = await OllamaClient(llm_settings).refine_minutes(
+    summary_settings = _minutes_summary_settings(llm_settings)
+    result = await OllamaClient(summary_settings).refine_minutes(
         title=detail.title,
         transcript=refined_timeline,
     )
-    markdown = result.text.strip() or fallback_markdown
-    return markdown, segments, model
+    markdown = _append_timestamped_clean_transcript(
+        result.text.strip()
+        or _fallback_minutes_body(title=detail.title, body=refined_body),
+        refined_timeline,
+    )
+    return markdown, segments, summary_settings.model

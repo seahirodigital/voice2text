@@ -19,12 +19,12 @@ DEFAULT_REFINEMENT_PROMPT = (
 
 DEFAULT_MINUTES_PROMPT = (
     "You are an editor creating Japanese meeting minutes from speech recognition output. "
-    "Rewrite the transcript into clean Markdown. Preserve the meaning, do not invent facts, "
-    "remove duplicated phrases, and make the text readable. "
-    "Do not summarize. The timestamped section must be a cleaned transcript "
-    "with the original timestamps preserved. "
-    "Use this structure exactly: # title, ## Refined Transcript, "
-    "## Timestamped Clean Transcript. Return only Markdown."
+    "Use the cleaned timestamped transcript as the source of truth. "
+    "Create concise but useful Markdown minutes in Japanese. Preserve the meaning, "
+    "do not invent facts, remove duplicated phrases, and make the text readable. "
+    "Use this structure exactly: # title, ## Summary, ## Key Points, ## Details, "
+    "## Action Items. If there are no action items, write '- None'. "
+    "Do not include a timestamped transcript section. Return only Markdown."
 )
 
 TIMELINE_BLOCK_PROMPT = (

@@ -26,7 +26,7 @@ class ApiSettings(BaseModel):
 
 
 class LlmSettings(BaseModel):
-    enabled: bool = False
+    enabled: bool = True
     provider: Literal["ollama"] = "ollama"
     base_url: str = Field(default="http://localhost:11434", alias="baseUrl")
     model: str = "gemma4:e2b"

@@ -20,7 +20,7 @@ from app.models.schemas import (
     WebSocketEnvelope,
 )
 from app.services.live_session import LiveTranscriptionSession
-from app.services.minutes_service import create_minutes_for_session
+from app.services.minutes_service import MINUTES_SUMMARY_MODEL, create_minutes_for_session
 from app.services.session_store import SessionStore
 from app.services.settings_service import SettingsService
 
@@ -186,7 +186,7 @@ async def create_session_minutes(session_id: str):
             session_id,
             minutes_markdown="",
             minutes_segments=None,
-            minutes_model=settings.llm.model,
+            minutes_model=MINUTES_SUMMARY_MODEL,
             minutes_error=str(exc),
         )
         if detail is None:
