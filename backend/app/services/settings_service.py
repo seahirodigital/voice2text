@@ -17,6 +17,8 @@ MODEL_PRESET_CANDIDATES: dict[str, list[ModelArch]] = {
     "small-streaming": [ModelArch.SMALL_STREAMING],
     "medium-streaming": [ModelArch.MEDIUM_STREAMING],
 }
+FASTER_WHISPER_MODELS = ["tiny", "base", "small", "medium", "large-v3"]
+BATCH_TRANSCRIPTION_ENGINES = ["faster-whisper", "moonshine"]
 
 
 @dataclass(slots=True)
@@ -69,6 +71,8 @@ class SettingsService:
             availableModelsByLanguage={
                 language: available_model_presets(language) for language in languages
             },
+            batchTranscriptionEngines=BATCH_TRANSCRIPTION_ENGINES,
+            fasterWhisperModels=FASTER_WHISPER_MODELS,
             defaultLanguage=settings.transcription.language,
             defaultModelPreset=settings.transcription.model_preset,
         )

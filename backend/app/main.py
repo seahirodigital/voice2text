@@ -165,9 +165,9 @@ async def create_session_minutes(session_id: str):
         markdown, segments, model = await create_minutes_for_session(
             store=store,
             models_root=Path(paths.models_root),
+            faster_whisper_models_root=Path(paths.faster_whisper_models_root),
             session_id=session_id,
-            language=settings.transcription.language,
-            model_preset=settings.transcription.model_preset,
+            transcription_settings=settings.transcription,
             llm_settings=settings.llm,
         )
         detail = store.update_minutes(

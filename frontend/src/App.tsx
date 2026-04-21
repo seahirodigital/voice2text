@@ -78,6 +78,11 @@ const LANGUAGE_LABELS: Record<string, string> = {
   ar: "Arabic",
 };
 
+const BATCH_ENGINE_LABELS: Record<string, string> = {
+  "faster-whisper": "Faster Whisper",
+  moonshine: "Moonshine",
+};
+
 const STATUS_LABELS: Record<RecordingStatus, string> = {
   idle: "Ready",
   connecting: "Connecting",
@@ -2792,6 +2797,7 @@ function App() {
                                   ...current.transcription,
                                   language: nextLanguage,
                                   modelPreset: nextModel,
+                                  batchMoonshineModelPreset: nextModel,
                                 },
                               }));
                             }}
@@ -2826,6 +2832,95 @@ function App() {
                               </option>
                             ))}
                           </select>
+                        </div>
+                      </div>
+
+                      <div className="grid gap-4 sm:grid-cols-2">
+                        <div className="space-y-2">
+                          <label className="field-label">Batch Engine</label>
+                          <select
+                            value={draftSettings.transcription.batchTranscriptionEngine}
+                            onChange={(event) =>
+                              updateDraftSettings((current) => ({
+                                ...current,
+                                transcription: {
+                                  ...current.transcription,
+                                  batchTranscriptionEngine: event.target.value as
+                                    | "faster-whisper"
+                                    | "moonshine",
+                                },
+                              }))
+                            }
+                            className="field-input"
+                          >
+                            {(meta?.batchTranscriptionEngines ?? [
+                              "faster-whisper",
+                              "moonshine",
+                            ]).map((engine) => (
+                              <option key={engine} value={engine}>
+                                {BATCH_ENGINE_LABELS[engine] ?? engine}
+                              </option>
+                            ))}
+                          </select>
+                          <p className="text-xs leading-5 text-slate-500">
+                            Used by the saved-audio transcript refinement button.
+                          </p>
+                        </div>
+
+                        <div className="space-y-2">
+                          <label className="field-label">Batch Model</label>
+                          {draftSettings.transcription.batchTranscriptionEngine ===
+                          "moonshine" ? (
+                            <select
+                              value={draftSettings.transcription.batchMoonshineModelPreset}
+                              onChange={(event) =>
+                                updateDraftSettings((current) => ({
+                                  ...current,
+                                  transcription: {
+                                    ...current.transcription,
+                                    batchMoonshineModelPreset: event.target.value,
+                                  },
+                                }))
+                              }
+                              className="field-input"
+                            >
+                              {activeModelOptions.map((preset) => (
+                                <option key={preset} value={preset}>
+                                  Moonshine {preset}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <select
+                              value={draftSettings.transcription.fasterWhisperModel}
+                              onChange={(event) =>
+                                updateDraftSettings((current) => ({
+                                  ...current,
+                                  transcription: {
+                                    ...current.transcription,
+                                    fasterWhisperModel: event.target.value,
+                                  },
+                                }))
+                              }
+                              className="field-input"
+                            >
+                              {(meta?.fasterWhisperModels ?? [
+                                "tiny",
+                                "base",
+                                "small",
+                                "medium",
+                                "large-v3",
+                              ]).map((model) => (
+                                <option key={model} value={model}>
+                                  Faster Whisper {model}
+                                </option>
+                              ))}
+                            </select>
+                          )}
+                          <p className="text-xs leading-5 text-slate-500">
+                            Faster Whisper models are stored under LocalAppData, not
+                            OneDrive.
+                          </p>
                         </div>
                       </div>
 
@@ -3346,6 +3441,10 @@ function App() {
                       <p>Config: {settingsResponse.resolvedPaths.configPath}</p>
                       <p>Repo: {settingsResponse.resolvedPaths.repoRoot}</p>
                       <p>Models: {settingsResponse.resolvedPaths.modelsRoot}</p>
+                      <p>
+                        Faster Whisper:{" "}
+                        {settingsResponse.resolvedPaths.fasterWhisperModelsRoot}
+                      </p>
                       <p>Data: {settingsResponse.resolvedPaths.dataRoot}</p>
                       <p>Sessions: {settingsResponse.resolvedPaths.sessionsRoot}</p>
                       <p>

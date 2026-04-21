@@ -1,5 +1,6 @@
 export type SpeakerSource =
   | "moonshine"
+  | "faster-whisper"
   | "feature-fallback"
   | "carry-forward";
 
@@ -19,6 +20,7 @@ export interface ProviderConfig {
 export interface AppSettings {
   paths: {
     modelsRoot: string;
+    fasterWhisperModelsRoot: string;
     dataRoot: string;
     tempRecordingsRoot: string;
     frontendDist: string;
@@ -26,6 +28,9 @@ export interface AppSettings {
   transcription: {
     language: string;
     modelPreset: string;
+    batchTranscriptionEngine: "faster-whisper" | "moonshine";
+    batchMoonshineModelPreset: string;
+    fasterWhisperModel: string;
     maxSpeakers: number;
     updateIntervalMs: number;
     enableWordTimestamps: boolean;
@@ -55,6 +60,7 @@ export interface ResolvedPaths {
   configPath: string;
   repoRoot: string;
   modelsRoot: string;
+  fasterWhisperModelsRoot: string;
   dataRoot: string;
   sessionsRoot: string;
   tempRecordingsRoot: string;
@@ -114,6 +120,8 @@ export interface SessionDetail extends SessionSummary {
 export interface MetaResponse {
   supportedLanguages: string[];
   availableModelsByLanguage: Record<string, string[]>;
+  batchTranscriptionEngines: Array<"faster-whisper" | "moonshine">;
+  fasterWhisperModels: string[];
   defaultLanguage: string;
   defaultModelPreset: string;
 }

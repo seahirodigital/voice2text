@@ -22,10 +22,15 @@ popd
 set "VOICE2TEXT_MODELS_ROOT=%LOCAL_BASE%\models"
 python "%ROOT%backend\scripts\bootstrap_models.py"
 
+set "VOICE2TEXT_FASTER_WHISPER_ROOT=%LOCAL_BASE%\faster_whisper_models"
+set "VOICE2TEXT_FASTER_WHISPER_MODEL=base"
+python "%ROOT%backend\scripts\bootstrap_faster_whisper.py"
+
 echo.
 echo Voice2Text setup complete.
 echo Backend venv: %BACKEND_VENV%
 echo Models root: %VOICE2TEXT_MODELS_ROOT%
+echo Faster Whisper models: %VOICE2TEXT_FASTER_WHISPER_ROOT%
 echo.
 echo Next step:
 echo   start.bat

@@ -13,6 +13,7 @@ CONFIG_PATH = REPO_ROOT / "config.json"
 DEFAULT_CONFIG: dict[str, Any] = {
     "paths": {
         "modelsRoot": r"%LOCALAPPDATA%\Voice2Text\models",
+        "fasterWhisperModelsRoot": r"%LOCALAPPDATA%\Voice2Text\faster_whisper_models",
         "dataRoot": r"%LOCALAPPDATA%\Voice2Text\data",
         "tempRecordingsRoot": r"%LOCALAPPDATA%\Voice2Text\temp_recordings",
         "frontendDist": "frontend/dist",
@@ -20,6 +21,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "transcription": {
         "language": "ja",
         "modelPreset": "base",
+        "batchTranscriptionEngine": "faster-whisper",
+        "batchMoonshineModelPreset": "base",
+        "fasterWhisperModel": "base",
         "maxSpeakers": 3,
         "updateIntervalMs": 5000,
         "enableWordTimestamps": False,
@@ -90,18 +94,26 @@ def save_settings(settings: AppSettings) -> None:
 
 def resolve_paths(settings: AppSettings) -> ResolvedPaths:
     models_root = _expand_path(settings.paths.models_root)
+    faster_whisper_models_root = _expand_path(settings.paths.faster_whisper_models_root)
     data_root = _expand_path(settings.paths.data_root)
     temp_recordings_root = _expand_path(settings.paths.temp_recordings_root)
     frontend_dist = _expand_path(settings.paths.frontend_dist)
     sessions_root = data_root / "sessions"
 
-    for path in (models_root, data_root, sessions_root, temp_recordings_root):
+    for path in (
+        models_root,
+        faster_whisper_models_root,
+        data_root,
+        sessions_root,
+        temp_recordings_root,
+    ):
         path.mkdir(parents=True, exist_ok=True)
 
     return ResolvedPaths(
         configPath=str(CONFIG_PATH),
         repoRoot=str(REPO_ROOT),
         modelsRoot=str(models_root),
+        fasterWhisperModelsRoot=str(faster_whisper_models_root),
         dataRoot=str(data_root),
         sessionsRoot=str(sessions_root),
         tempRecordingsRoot=str(temp_recordings_root),

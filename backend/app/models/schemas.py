@@ -44,6 +44,10 @@ class LlmSettings(BaseModel):
 
 class PathSettings(BaseModel):
     models_root: str = Field(alias="modelsRoot")
+    faster_whisper_models_root: str = Field(
+        default=r"%LOCALAPPDATA%\Voice2Text\faster_whisper_models",
+        alias="fasterWhisperModelsRoot",
+    )
     data_root: str = Field(alias="dataRoot")
     temp_recordings_root: str = Field(alias="tempRecordingsRoot")
     frontend_dist: str = Field(alias="frontendDist")
@@ -54,6 +58,13 @@ class PathSettings(BaseModel):
 class TranscriptionSettings(BaseModel):
     language: str = "ja"
     model_preset: str = Field(default="base", alias="modelPreset")
+    batch_transcription_engine: Literal["faster-whisper", "moonshine"] = Field(
+        default="faster-whisper", alias="batchTranscriptionEngine"
+    )
+    batch_moonshine_model_preset: str = Field(
+        default="base", alias="batchMoonshineModelPreset"
+    )
+    faster_whisper_model: str = Field(default="base", alias="fasterWhisperModel")
     max_speakers: int = Field(default=3, alias="maxSpeakers", ge=1, le=3)
     update_interval_ms: int = Field(
         default=5000, alias="updateIntervalMs", ge=100, le=5000
@@ -78,6 +89,7 @@ class ResolvedPaths(BaseModel):
     config_path: str = Field(alias="configPath")
     repo_root: str = Field(alias="repoRoot")
     models_root: str = Field(alias="modelsRoot")
+    faster_whisper_models_root: str = Field(alias="fasterWhisperModelsRoot")
     data_root: str = Field(alias="dataRoot")
     sessions_root: str = Field(alias="sessionsRoot")
     temp_recordings_root: str = Field(alias="tempRecordingsRoot")
@@ -99,9 +111,9 @@ class TranscriptSegment(BaseModel):
     text: str
     speaker_label: str = Field(alias="speakerLabel")
     speaker_index: int = Field(alias="speakerIndex")
-    speaker_source: Literal["moonshine", "feature-fallback", "carry-forward"] = Field(
-        alias="speakerSource"
-    )
+    speaker_source: Literal[
+        "moonshine", "faster-whisper", "feature-fallback", "carry-forward"
+    ] = Field(alias="speakerSource")
     started_at: float = Field(alias="startedAt")
     duration: float
     is_complete: bool = Field(alias="isComplete")
@@ -173,6 +185,8 @@ class MetaResponse(BaseModel):
     available_models_by_language: dict[str, list[str]] = Field(
         alias="availableModelsByLanguage"
     )
+    batch_transcription_engines: list[str] = Field(alias="batchTranscriptionEngines")
+    faster_whisper_models: list[str] = Field(alias="fasterWhisperModels")
     default_language: str = Field(alias="defaultLanguage")
     default_model_preset: str = Field(alias="defaultModelPreset")
 

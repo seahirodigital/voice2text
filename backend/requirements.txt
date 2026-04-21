@@ -10,4 +10,4 @@ soundfile==0.13.1
 websockets==16.0
 pytest==8.4.2
 httpx==0.28.1
-
+faster-whisper==1.1.1

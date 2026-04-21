@@ -9,7 +9,7 @@ import soundfile as sf
 from scipy.signal import resample_poly
 from moonshine_voice import Transcriber
 
-from app.models.schemas import LlmSettings, TranscriptSegment, utc_now_iso
+from app.models.schemas import LlmSettings, TranscriptionSettings, TranscriptSegment, utc_now_iso
 from app.services.live_session import _resolve_model
 from app.services.ollama_client import OllamaClient
 from app.services.session_store import TARGET_RECORDING_SAMPLE_RATE, SessionStore
@@ -69,6 +69,95 @@ def _transcribe_audio(model_path: str, model_arch, audio: np.ndarray):
         )
     finally:
         transcriber.close()
+
+
+def _transcribe_faster_whisper_audio(
+    *,
+    model_name: str,
+    models_root: Path,
+    language: str,
+    audio: np.ndarray,
+) -> list[TranscriptSegment]:
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError as exc:
+        raise ValueError(
+            "faster-whisper is not installed. Run setup.bat to install it locally."
+        ) from exc
+
+    models_root.mkdir(parents=True, exist_ok=True)
+    model = WhisperModel(
+        model_name,
+        device="cpu",
+        compute_type="int8",
+        download_root=str(models_root),
+    )
+    transcribed_segments, _info = model.transcribe(
+        audio,
+        language=language,
+        vad_filter=False,
+        word_timestamps=False,
+    )
+
+    now = utc_now_iso()
+    segments: list[TranscriptSegment] = []
+    for index, segment in enumerate(transcribed_segments):
+        text = str(getattr(segment, "text", "") or "").strip()
+        if not text:
+            continue
+        start = float(getattr(segment, "start", 0.0) or 0.0)
+        end = float(getattr(segment, "end", start) or start)
+        segments.append(
+            TranscriptSegment(
+                id=f"faster-whisper-line-{index}",
+                lineId=index,
+                text=text,
+                speakerLabel="Audio",
+                speakerIndex=0,
+                speakerSource="faster-whisper",
+                startedAt=round(start, 3),
+                duration=round(max(0.0, end - start), 3),
+                isComplete=True,
+                latencyMs=0,
+                updatedAt=now,
+            )
+        )
+    return segments
+
+
+def _transcribe_moonshine_segments(
+    *,
+    models_root: Path,
+    language: str,
+    model_preset: str,
+    audio: np.ndarray,
+) -> list[TranscriptSegment]:
+    model_path, model_arch, _ = _resolve_model(language, model_preset, models_root)
+    transcript = _transcribe_audio(model_path, model_arch, audio)
+    return _transcript_to_segments(transcript)
+
+
+def _transcribe_batch_segments(
+    *,
+    models_root: Path,
+    faster_whisper_models_root: Path,
+    transcription_settings: TranscriptionSettings,
+    audio: np.ndarray,
+) -> list[TranscriptSegment]:
+    if transcription_settings.batch_transcription_engine == "moonshine":
+        return _transcribe_moonshine_segments(
+            models_root=models_root,
+            language=transcription_settings.language,
+            model_preset=transcription_settings.batch_moonshine_model_preset,
+            audio=audio,
+        )
+
+    return _transcribe_faster_whisper_audio(
+        model_name=transcription_settings.faster_whisper_model,
+        models_root=faster_whisper_models_root,
+        language=transcription_settings.language,
+        audio=audio,
+    )
 
 
 def _segments_to_timeline_text(segments: list[TranscriptSegment]) -> str:
@@ -215,9 +304,9 @@ async def create_minutes_for_session(
     *,
     store: SessionStore,
     models_root: Path,
+    faster_whisper_models_root: Path,
     session_id: str,
-    language: str,
-    model_preset: str,
+    transcription_settings: TranscriptionSettings,
     llm_settings: LlmSettings,
 ) -> tuple[str, list[TranscriptSegment], str | None]:
     detail = store.get_session(session_id)
@@ -231,11 +320,15 @@ async def create_minutes_for_session(
         raise ValueError("Recording audio file was not found.")
 
     audio = _load_recording_audio(audio_path)
-    model_path, model_arch, _ = _resolve_model(language, model_preset, models_root)
-    transcript = await asyncio.to_thread(_transcribe_audio, model_path, model_arch, audio)
+    segments = await asyncio.to_thread(
+        _transcribe_batch_segments,
+        models_root=models_root,
+        faster_whisper_models_root=faster_whisper_models_root,
+        transcription_settings=transcription_settings,
+        audio=audio,
+    )
 
     existing_segments = detail.segments
-    segments = _transcript_to_segments(transcript)
     refined_blocks = await _refine_timeline_blocks(llm_settings, segments)
     segments = _apply_refined_blocks_to_transcript_segments(segments, refined_blocks)
     segments = _preserve_realtime_llm_columns(segments, existing_segments)
