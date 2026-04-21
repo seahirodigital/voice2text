@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import json
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,13 +30,13 @@ from app.services.session_store import SessionStore
 from app.services.settings_service import MODEL_PRESET_CANDIDATES
 from app.services.speaker_labeler import SpeakerLabeler
 
+
 def _format_session_title(started_at: str) -> str:
     try:
         started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
     except ValueError:
         started = datetime.now(timezone.utc)
     return started.astimezone().strftime("%Y/%m/%d %H:%M")
-
 
 
 def _resolve_model(
@@ -127,7 +127,10 @@ class LiveTranscriptionSession:
         self.raw_audio = bytearray()
         self.segments: dict[int, TranscriptSegment] = {}
         self.llm_revisions: dict[int, int] = {}
-        self.llm_tasks = {}
+        self.llm_pending_line_ids: set[int] = set()
+        self.llm_requested_at: dict[int, float] = {}
+        self.llm_worker_future = None
+        self.llm_wake_event = asyncio.Event()
         self.active = False
         self.paused = False
 
@@ -158,6 +161,8 @@ class LiveTranscriptionSession:
         self.raw_audio = bytearray()
         self.segments = {}
         self.llm_revisions = {}
+        self.llm_pending_line_ids = set()
+        self.llm_requested_at = {}
         self._cancel_llm_tasks()
         if payload.llm_settings is not None:
             self.llm_settings = payload.llm_settings
@@ -327,9 +332,13 @@ class LiveTranscriptionSession:
         self.loop.call_soon_threadsafe(self.queue.put_nowait, payload)
 
     def _cancel_llm_tasks(self) -> None:
-        for task in self.llm_tasks.values():
-            task.cancel()
-        self.llm_tasks = {}
+        self.llm_pending_line_ids.clear()
+        self.llm_requested_at.clear()
+        future = self.llm_worker_future
+        if future is not None and not future.done():
+            future.cancel()
+        self.llm_worker_future = None
+        self._wake_llm_worker()
 
     def _schedule_llm_refinement(self, line_id: int) -> None:
         settings = self.llm_settings
@@ -346,10 +355,8 @@ class LiveTranscriptionSession:
 
         revision = self.llm_revisions.get(line_id, 0) + 1
         self.llm_revisions[line_id] = revision
-
-        existing_task = self.llm_tasks.pop(line_id, None)
-        if existing_task is not None:
-            existing_task.cancel()
+        self.llm_pending_line_ids.add(line_id)
+        self.llm_requested_at[line_id] = time.monotonic()
 
         segment.llm_status = "pending"
         segment.llm_model = settings.model
@@ -357,30 +364,114 @@ class LiveTranscriptionSession:
         segment.llm_error = None
         self._publish_llm_segment("llm_refinement_started", segment)
 
-        task = asyncio.run_coroutine_threadsafe(
-            self._refine_line_after_delay(
-                line_id,
-                revision,
-                settings.model_copy(deep=True),
-            ),
-            self.loop,
-        )
-        self.llm_tasks[line_id] = task
+        self._ensure_llm_worker()
 
-    async def _refine_line_after_delay(
+    def _ensure_llm_worker(self) -> None:
+        if not self.active:
+            return
+        if self.llm_worker_future is None or self.llm_worker_future.done():
+            self.llm_worker_future = asyncio.run_coroutine_threadsafe(
+                self._llm_worker_loop(),
+                self.loop,
+            )
+        self._wake_llm_worker()
+
+    def _wake_llm_worker(self) -> None:
+        self.loop.call_soon_threadsafe(self.llm_wake_event.set)
+
+    async def _llm_worker_loop(self) -> None:
+        try:
+            while self.active:
+                settings = self.llm_settings.model_copy(deep=True)
+                if not settings.enabled or settings.provider != "ollama":
+                    return
+
+                self.llm_wake_event.clear()
+                line_id, wait_seconds = self._next_llm_work(settings)
+                if line_id is None:
+                    if wait_seconds is None:
+                        await self.llm_wake_event.wait()
+                    else:
+                        try:
+                            await asyncio.wait_for(
+                                self.llm_wake_event.wait(),
+                                timeout=max(0.0, wait_seconds),
+                            )
+                        except asyncio.TimeoutError:
+                            pass
+                    continue
+
+                revision = self.llm_revisions.get(line_id, 0)
+                self.llm_pending_line_ids.discard(line_id)
+                await self._refine_line(
+                    line_id,
+                    revision,
+                    settings,
+                )
+        except asyncio.CancelledError:
+            return
+
+    def _next_llm_work(self, settings: LlmSettings) -> tuple[int | None, float | None]:
+        now = time.monotonic()
+        for line_id in sorted(self.llm_pending_line_ids):
+            segment = self.segments.get(line_id)
+            if segment is None or not segment.text.strip():
+                self.llm_pending_line_ids.discard(line_id)
+                self.llm_requested_at.pop(line_id, None)
+                continue
+
+            if settings.complete_only and not segment.is_complete:
+                return None, None
+
+            requested_at = self.llm_requested_at.setdefault(line_id, now)
+            debounce_delay = requested_at + (settings.debounce_ms / 1000) - now
+            if debounce_delay > 0:
+                return None, debounce_delay
+
+            if not self._has_required_after_context(line_id, settings):
+                timeout_delay = requested_at + (settings.max_wait_ms / 1000) - now
+                if timeout_delay > 0:
+                    return None, timeout_delay
+
+            return line_id, None
+
+        return None, None
+
+    def _has_required_after_context(
+        self,
+        line_id: int,
+        settings: LlmSettings,
+    ) -> bool:
+        required_after_lines = settings.context_after_lines
+        if required_after_lines <= 0:
+            return True
+
+        ordered_segments = self._ordered_segments()
+        current_index = self._segment_index(ordered_segments, line_id)
+        if current_index is None:
+            return False
+
+        after_segments = ordered_segments[current_index + 1 :]
+        available_after_lines = sum(
+            1 for segment in after_segments if segment.text.strip()
+        )
+        return available_after_lines >= required_after_lines
+
+    async def _refine_line(
         self,
         line_id: int,
         revision: int,
         settings: LlmSettings,
     ) -> None:
         try:
-            if settings.debounce_ms > 0:
-                await asyncio.sleep(settings.debounce_ms / 1000)
-
             if not self.active or self.llm_revisions.get(line_id) != revision:
                 return
 
-            context = self._build_refinement_context(line_id, settings.context_lines)
+            context = self._build_refinement_context(
+                line_id,
+                settings.context_before_lines,
+                settings.context_after_lines,
+            )
             result = await OllamaClient(settings).refine(context)
 
             if not self.active or self.llm_revisions.get(line_id) != revision:
@@ -396,6 +487,7 @@ class LiveTranscriptionSession:
             segment.llm_latency_ms = result.latency_ms
             segment.llm_updated_at = utc_now_iso()
             segment.llm_error = None
+            self.llm_requested_at.pop(line_id, None)
             self._publish_llm_segment("llm_refinement_updated", segment)
         except asyncio.CancelledError:
             return
@@ -409,27 +501,60 @@ class LiveTranscriptionSession:
             segment.llm_model = settings.model
             segment.llm_updated_at = utc_now_iso()
             segment.llm_error = str(exc)
+            self.llm_requested_at.pop(line_id, None)
             self._publish_llm_segment("llm_refinement_error", segment)
 
-    def _build_refinement_context(self, line_id: int, context_lines: int) -> str:
-        ordered_segments = [
+    def _ordered_segments(self) -> list[TranscriptSegment]:
+        return [
             self.segments[key] for key in sorted(self.segments, key=lambda item: item)
         ]
-        current_index = next(
+
+    @staticmethod
+    def _segment_index(
+        ordered_segments: list[TranscriptSegment],
+        line_id: int,
+    ) -> int | None:
+        return next(
             (
                 index
                 for index, segment in enumerate(ordered_segments)
                 if segment.line_id == line_id
             ),
-            len(ordered_segments) - 1,
+            None,
         )
-        start_index = max(0, current_index - max(0, context_lines - 1))
-        context_segments = ordered_segments[start_index : current_index + 1]
+
+    def _build_refinement_context(
+        self,
+        line_id: int,
+        context_before_lines: int,
+        context_after_lines: int,
+    ) -> str:
+        ordered_segments = self._ordered_segments()
+        current_index = self._segment_index(ordered_segments, line_id)
+        if current_index is None:
+            return "Refine only the CURRENT line.\nCURRENT: "
+
+        start_index = max(0, current_index - context_before_lines)
+        end_index = min(len(ordered_segments), current_index + context_after_lines + 1)
+        context_segments = ordered_segments[start_index:end_index]
         lines = []
         for segment in context_segments:
-            marker = "CURRENT" if segment.line_id == line_id else "CONTEXT"
-            lines.append(f"{marker} {segment.speaker_label}: {segment.text}")
-        return "Refine only the CURRENT line.\n" + "\n".join(lines)
+            if segment.line_id == line_id:
+                marker = "CURRENT"
+            elif segment.line_id < line_id:
+                marker = "PREVIOUS"
+            else:
+                marker = "NEXT"
+            status = "complete" if segment.is_complete else "draft"
+            lines.append(
+                f"{marker} line={segment.line_id} status={status} "
+                f"speaker={segment.speaker_label}: {segment.text}"
+            )
+        return (
+            "Refine only the CURRENT line. Use PREVIOUS and NEXT lines only as "
+            "context. Return exactly one refined line.\n"
+            + "\n".join(lines)
+        )
 
     def _publish_llm_segment(self, event_type: str, segment: TranscriptSegment) -> None:
         self._put_nowait(

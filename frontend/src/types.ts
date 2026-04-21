@@ -43,7 +43,10 @@ export interface AppSettings {
     baseUrl: string;
     model: string;
     contextLines: number;
+    contextBeforeLines: number;
+    contextAfterLines: number;
     debounceMs: number;
+    maxWaitMs: number;
     completeOnly: boolean;
   };
 }

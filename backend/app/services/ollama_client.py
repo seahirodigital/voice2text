@@ -10,9 +10,9 @@ from app.models.schemas import LlmSettings
 
 DEFAULT_REFINEMENT_PROMPT = (
     "You are an editor for Japanese speech recognition output. "
-    "Rewrite the current line into natural Japanese without changing the meaning. "
-    "Use surrounding lines only as context. Add punctuation and normalize kanji/kana. "
-    "Do not add facts that are not present. Return only the refined current line."
+    "Rewrite the line marked CURRENT into natural Japanese without changing the meaning. "
+    "Use PREVIOUS and NEXT lines only as context. Add punctuation and normalize kanji/kana. "
+    "Do not add facts that are not present. Return only the refined CURRENT line."
 )
 
 

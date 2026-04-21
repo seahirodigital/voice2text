@@ -2460,20 +2460,43 @@ function App() {
                         </div>
 
                         <div className="space-y-2">
-                          <label className="field-label">Context Lines</label>
+                          <label className="field-label">Context Before</label>
                           <input
                             type="number"
-                            min={1}
+                            min={0}
                             max={20}
-                            value={draftSettings.llm.contextLines}
+                            value={draftSettings.llm.contextBeforeLines}
                             onChange={(event) =>
                               updateDraftSettings((current) => ({
                                 ...current,
                                 llm: {
                                   ...current.llm,
-                                  contextLines: Math.min(
+                                  contextBeforeLines: Math.min(
                                     20,
-                                    Math.max(1, Number(event.target.value) || 1),
+                                    Math.max(0, Number(event.target.value) || 0),
+                                  ),
+                                },
+                              }))
+                            }
+                            className="field-input"
+                          />
+                        </div>
+
+                        <div className="space-y-2">
+                          <label className="field-label">Context After</label>
+                          <input
+                            type="number"
+                            min={0}
+                            max={10}
+                            value={draftSettings.llm.contextAfterLines}
+                            onChange={(event) =>
+                              updateDraftSettings((current) => ({
+                                ...current,
+                                llm: {
+                                  ...current.llm,
+                                  contextAfterLines: Math.min(
+                                    10,
+                                    Math.max(0, Number(event.target.value) || 0),
                                   ),
                                 },
                               }))
@@ -2497,6 +2520,30 @@ function App() {
                                   ...current.llm,
                                   debounceMs: Math.min(
                                     10000,
+                                    Math.max(0, Number(event.target.value) || 0),
+                                  ),
+                                },
+                              }))
+                            }
+                            className="field-input"
+                          />
+                        </div>
+
+                        <div className="space-y-2">
+                          <label className="field-label">Max Wait ms</label>
+                          <input
+                            type="number"
+                            min={0}
+                            max={30000}
+                            step={100}
+                            value={draftSettings.llm.maxWaitMs}
+                            onChange={(event) =>
+                              updateDraftSettings((current) => ({
+                                ...current,
+                                llm: {
+                                  ...current.llm,
+                                  maxWaitMs: Math.min(
+                                    30000,
                                     Math.max(0, Number(event.target.value) || 0),
                                   ),
                                 },

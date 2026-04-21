@@ -31,7 +31,12 @@ class LlmSettings(BaseModel):
     base_url: str = Field(default="http://localhost:11434", alias="baseUrl")
     model: str = "gemma4:e2b"
     context_lines: int = Field(default=3, alias="contextLines", ge=1, le=20)
+    context_before_lines: int = Field(
+        default=3, alias="contextBeforeLines", ge=0, le=20
+    )
+    context_after_lines: int = Field(default=2, alias="contextAfterLines", ge=0, le=10)
     debounce_ms: int = Field(default=1200, alias="debounceMs", ge=0, le=10000)
+    max_wait_ms: int = Field(default=3000, alias="maxWaitMs", ge=0, le=30000)
     complete_only: bool = Field(default=False, alias="completeOnly")
 
     model_config = ConfigDict(populate_by_name=True)

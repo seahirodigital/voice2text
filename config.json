@@ -31,7 +31,10 @@
     "baseUrl": "http://localhost:11434",
     "model": "gemma4:e2b",
     "contextLines": 3,
+    "contextBeforeLines": 3,
+    "contextAfterLines": 2,
     "debounceMs": 1200,
+    "maxWaitMs": 3000,
     "completeOnly": false
   }
 }
