@@ -9,18 +9,21 @@ set "BACKEND_LOG=%LOG_DIR%\backend.log"
 set "BACKEND_ERR=%LOG_DIR%\backend.err.log"
 set "FRONTEND_LOG=%LOG_DIR%\frontend.log"
 set "FRONTEND_ERR=%LOG_DIR%\frontend.err.log"
+set "OLLAMA_MODELS=%ROOT%LLM\models"
+set "OLLAMA_HOST=127.0.0.1:11434"
+set "OLLAMA_LLM_LIBRARY=cpu"
 set "EXIT_CODE=0"
 
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
 
 powershell -NoProfile -Command "$targets = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'python.exe' -and $_.CommandLine -like '*uvicorn app.main:app --host 127.0.0.1 --port 8000*' }; foreach ($process in $targets) { Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>nul
-powershell -NoProfile -Command "$targets = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'node.exe' -and $_.CommandLine -like '*Voice2Text\\frontend\\node_modules*vite*' }; foreach ($process in $targets) { Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>nul
+powershell -NoProfile -Command "$frontendRoot = '%ROOT%frontend'; $targets = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'node.exe' -and $_.CommandLine -like ('*' + $frontendRoot + '*vite*') }; foreach ($process in $targets) { Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue }; for ($i = 0; $i -lt 20; $i++) { $listener = $null; try { $listener = Get-NetTCPConnection -LocalPort 5173 -State Listen -ErrorAction Stop | Select-Object -First 1 } catch { $listener = $null }; if (-not $listener) { break }; Start-Sleep -Milliseconds 250 }" >nul 2>nul
 powershell -NoProfile -Command "$listener = $null; try { $listener = Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction Stop | Select-Object -First 1 } catch { $listener = $null }; if ($listener) { $process = Get-CimInstance Win32_Process -Filter \"ProcessId = $($listener.OwningProcess)\"; Write-Host '[Voice2Text] Port 8000 is already in use.'; if ($process) { Write-Host ('  PID {0}: {1}' -f $process.ProcessId, $process.CommandLine) }; exit 1 }; exit 0"
 if errorlevel 1 (
   call :fail "Port 8000 is already in use."
   goto end
 )
-powershell -NoProfile -Command "$listener = $null; try { $listener = Get-NetTCPConnection -LocalPort 5173 -State Listen -ErrorAction Stop | Select-Object -First 1 } catch { $listener = $null }; if ($listener) { $process = Get-CimInstance Win32_Process -Filter \"ProcessId = $($listener.OwningProcess)\"; Write-Host '[Voice2Text] Port 5173 is already in use.'; if ($process) { Write-Host ('  PID {0}: {1}' -f $process.ProcessId, $process.CommandLine) }; exit 1 }; exit 0"
+powershell -NoProfile -Command "$frontendRoot = '%ROOT%frontend'; $listener = $null; try { $listener = Get-NetTCPConnection -LocalPort 5173 -State Listen -ErrorAction Stop | Select-Object -First 1 } catch { $listener = $null }; if ($listener) { $process = Get-CimInstance Win32_Process -Filter \"ProcessId = $($listener.OwningProcess)\"; if ($process -and $process.CommandLine -like ('*' + $frontendRoot + '*vite*')) { Stop-Process -Id $listener.OwningProcess -Force -ErrorAction SilentlyContinue; for ($i = 0; $i -lt 20; $i++) { $listener = $null; try { $listener = Get-NetTCPConnection -LocalPort 5173 -State Listen -ErrorAction Stop | Select-Object -First 1 } catch { $listener = $null }; if (-not $listener) { exit 0 }; Start-Sleep -Milliseconds 250 } }; Write-Host '[Voice2Text] Port 5173 is already in use.'; if ($process) { Write-Host ('  PID {0}: {1}' -f $process.ProcessId, $process.CommandLine) }; exit 1 }; exit 0"
 if errorlevel 1 (
   call :fail "Port 5173 is already in use."
   goto end
@@ -28,7 +31,13 @@ if errorlevel 1 (
 
 echo [Voice2Text] Starting backend and frontend...
 
-powershell -NoProfile -Command "$ErrorActionPreference='Stop'; Start-Process -FilePath '%BACKEND_VENV%\Scripts\python.exe' -ArgumentList '-m','uvicorn','app.main:app','--host','127.0.0.1','--port','8000' -WorkingDirectory '%ROOT%backend' -RedirectStandardOutput '%BACKEND_LOG%' -RedirectStandardError '%BACKEND_ERR%' | Out-Null"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%LLM\scripts\disable-ollama-startup.ps1" >nul 2>nul
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%LLM\scripts\start-ollama.ps1" -RepoRoot "%ROOT%"
+if errorlevel 1 (
+  echo [Voice2Text] Ollama is not ready. Raw transcription can still run, but LLM refinement requires Ollama.
+)
+
+powershell -NoProfile -Command "$ErrorActionPreference='Stop'; Start-Process -WindowStyle Hidden -FilePath '%BACKEND_VENV%\Scripts\python.exe' -ArgumentList '-m','uvicorn','app.main:app','--host','127.0.0.1','--port','8000' -WorkingDirectory '%ROOT%backend' -RedirectStandardOutput '%BACKEND_LOG%' -RedirectStandardError '%BACKEND_ERR%' | Out-Null"
 
 set "BACKEND_READY="
 for /L %%I in (1,1,40) do (
@@ -46,7 +55,7 @@ if not defined BACKEND_READY (
   goto end
 )
 
-powershell -NoProfile -Command "$ErrorActionPreference='Stop'; Start-Process -FilePath 'C:\Windows\System32\cmd.exe' -ArgumentList '/c','npm.cmd run dev' -WorkingDirectory '%ROOT%frontend' -RedirectStandardOutput '%FRONTEND_LOG%' -RedirectStandardError '%FRONTEND_ERR%' | Out-Null"
+powershell -NoProfile -Command "$ErrorActionPreference='Stop'; Start-Process -WindowStyle Hidden -FilePath 'C:\Windows\System32\cmd.exe' -ArgumentList '/c','npm.cmd run dev' -WorkingDirectory '%ROOT%frontend' -RedirectStandardOutput '%FRONTEND_LOG%' -RedirectStandardError '%FRONTEND_ERR%' | Out-Null"
 
 set "FRONTEND_READY="
 for /L %%I in (1,1,40) do (
@@ -60,12 +69,13 @@ for /L %%I in (1,1,40) do (
 
 :open_frontend
 if defined FRONTEND_READY (
-  start "" "%FRONTEND_URL%"
+  powershell -NoProfile -Command "Start-Process '%FRONTEND_URL%'"
   echo [Voice2Text] Ready.
   echo   Frontend: %FRONTEND_URL%
   echo   Backend:  http://127.0.0.1:8000/api/health
+  echo   Ollama:   http://127.0.0.1:11434/api/version
   echo   Logs:
-  echo     %BACKEND_LOG%
+    echo     %BACKEND_LOG%
   echo     %BACKEND_ERR%
   echo     %FRONTEND_LOG%
   echo     %FRONTEND_ERR%

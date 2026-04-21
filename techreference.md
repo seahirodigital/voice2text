@@ -36,7 +36,7 @@
 - `frontend` は `React + Vite + Tailwind CSS + Framer Motion` で白基調 UI を実装した。
 - タイムラインは `[経過時間] | [話者ラベル] | [編集可能なテキスト]` の 3 列構成にした。
 - 話者ラベルは Moonshine の speaker 情報を優先し、取れない場合は音響特徴ベースのフォールバックで `話者A/B/C` を割り当てる設計にした。
-- `setup.bat` と `run-dev.bat` を追加し、別 PC でも起動しやすい形にした。
+- `setup.bat` と `start.bat` を追加し、別 PC でも起動しやすい形にした。
 
 ### 2026-04-19 検証
 
@@ -67,14 +67,14 @@
 
 ## 2026-04-19 追加調査
 
-- `run-dev.bat` で frontend と backend を同時起動すると、frontend の初回 `/api/settings` `/api/meta` `/api/sessions` が backend より先に走って `ECONNREFUSED` になることがある。
+- `start.bat` で frontend と backend を同時起動すると、frontend の初回 `/api/settings` `/api/meta` `/api/sessions` が backend より先に走って `ECONNREFUSED` になることがある。
 - この初回失敗時、画面自体は表示されても `draftSettings` が `null` のまま残るため、`Start Recording` が「押せない」ように見える無反応状態になる。
 - Windows 環境では `uvicorn --reload` が `WinError 10013` を出して不安定だったため、開発用起動は通常モードに寄せたほうが安全だった。
-- `run-dev.bat` は backend の `/api/health` が 200 になるまで待ってから frontend を開くように修正した。
+- `start.bat` は backend の `/api/health` が 200 になるまで待ってから frontend を開くように修正した。
 - frontend 側も初期ロード失敗時に自動リトライし、接続待ち中はボタンを `Waiting for Backend` にして、明示的な `Retry Connection` も出すようにした。
-- Windows では古い `uvicorn app.main:app --port 8000` が残留すると、新しい backend が起動したつもりでも frontend が壊れた旧プロセスにつながることがある。`run-dev.bat` / `run-backend.bat` で対象 port の既存 Voice2Text backend を先に止める。
+- Windows では古い `uvicorn app.main:app --port 8000` が残留すると、新しい backend が起動したつもりでも frontend が壊れた旧プロセスにつながることがある。`start.bat` / `run-backend.bat` で対象 port の既存 Voice2Text backend を先に止める。
 - WebSocket の開始失敗は、frontend 側で `connecting` のまま放置すると原因が見えなくなる。`onclose` で開始中断を `error` に落とし、backend 側も例外時に `error` payload を返す。
-- Vite も旧 `node ... vite.js` が残ると、`run-dev` の新しい frontend 起動が裏で `Port 5173 is already in use` で落ちる。frontend も起動前に既存 Vite を止め、`127.0.0.1:5173` 固定で待ち合わせる。
-- `run-dev.bat` は `start cmd /k ...` 連打より、`Start-Process` で backend/frontend をバックグラウンド起動し、`%LOCALAPPDATA%\Voice2Text\logs` にログを吐く形のほうが Windows では安定した。起動確認後に `http://127.0.0.1:5173/` を開く。
+- Vite も旧 `node ... vite.js` が残ると、`start.bat` の新しい frontend 起動が裏で `Port 5173 is already in use` で落ちる。frontend も起動前に既存 Vite を止め、`127.0.0.1:5173` 固定で待ち合わせる。
+- `start.bat` は `start cmd /k ...` 連打より、`Start-Process` で backend/frontend をバックグラウンド起動し、`%LOCALAPPDATA%\Voice2Text\logs` にログを吐く形のほうが Windows では安定した。起動確認後に `http://127.0.0.1:5173/` を開く。
 - API が相対パスなのに WebSocket だけ `127.0.0.1:8000` を直書きすると、`localhost` / `127.0.0.1` / dev proxy の差で詰まりやすい。frontend の WebSocket も current origin の `/ws/transcribe` に寄せて、Vite proxy に統一する。
 - `connecting` の無限継続は、成功条件が見えないまま詰まる最悪パターン。録音開始には明示タイムアウトを置き、失敗時はログの場所まで含めて UI に出す。

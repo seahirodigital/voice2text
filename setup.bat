@@ -28,7 +28,6 @@ echo Backend venv: %BACKEND_VENV%
 echo Models root: %VOICE2TEXT_MODELS_ROOT%
 echo.
 echo Next step:
-echo   run-dev.bat
+echo   start.bat
 
 endlocal
-

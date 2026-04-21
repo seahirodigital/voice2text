@@ -18,7 +18,7 @@ setup.bat
 ## Run
 
 ```bat
-run-dev.bat
+start.bat
 ```
 
 ## Notes
