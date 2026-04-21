@@ -91,8 +91,6 @@ class SessionStore:
             detail.updated_at = utc_now_iso()
             if detail.audio_url:
                 detail.audio_url = self._rename_recording(detail.audio_url, normalized_title)
-        elif not detail.title_locked:
-            detail.title = self._derive_title(normalized_segments)
         summary = self.save_session(detail)
         return SessionDetail.model_validate(
             {
@@ -194,7 +192,9 @@ class SessionStore:
 
     @classmethod
     def _safe_filename_stem(cls, title: str) -> str:
-        sanitized = INVALID_FILENAME_CHARS.sub("", title).strip().rstrip(".")
+        sanitized = INVALID_FILENAME_CHARS.sub("-", title).strip().rstrip(".")
+        sanitized = re.sub(r"-+", "-", sanitized)
+        sanitized = re.sub(r"\s*-\s*", "-", sanitized)
         sanitized = re.sub(r"\s+", " ", sanitized)
         return (sanitized or DEFAULT_SESSION_TITLE)[:80]
 

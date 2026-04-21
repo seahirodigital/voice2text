@@ -30,6 +30,14 @@ from app.services.session_store import SessionStore
 from app.services.settings_service import MODEL_PRESET_CANDIDATES
 from app.services.speaker_labeler import SpeakerLabeler
 
+def _format_session_title(started_at: str) -> str:
+    try:
+        started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+    except ValueError:
+        started = datetime.now(timezone.utc)
+    return started.astimezone().strftime("%Y/%m/%d %H:%M")
+
+
 
 def _resolve_model(
     language: str, model_preset: str, models_root: Path
@@ -275,11 +283,7 @@ class LiveTranscriptionSession:
                 3,
             )
 
-        derived_title = (
-            ordered_segments[0].text[:40].strip()
-            if ordered_segments and ordered_segments[0].text.strip()
-            else "New Transcript"
-        )
+        derived_title = _format_session_title(self.context.started_at)
         audio_url = self.store.save_recording(
             self.context.session_id,
             bytes(self.raw_audio),
