@@ -1,0 +1,3746 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Vibe Blog Engine</title>
+  <meta name="description" content="YouTube動画からAIで自動生成されたブログ記事を閲覧・編集・保存できるMarkdownエディタ" />
+
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- React 18 -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <!-- Babel (JSX transpilation) -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- Marked.js (Markdown → HTML) -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+    rel="stylesheet" />
+
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Inter', 'Helvetica Neue', Arial, sans-serif;
+      background: #f8fafc;
+      color: #334155;
+    }
+
+    /* ── アニメーション ── */
+    @keyframes fadeIn {
+      from {
+        opacity: 0;
+        transform: translateY(8px);
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    @keyframes fadeInUp {
+      from {
+        opacity: 0;
+        transform: translateY(20px);
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    @keyframes pulse {
+
+      0%,
+      100% {
+        opacity: 1
+      }
+
+      50% {
+        opacity: .5
+      }
+    }
+
+    @keyframes shimmer {
+      0% {
+        background-position: -200% 0
+      }
+
+      100% {
+        background-position: 200% 0
+      }
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    .animate-fade-in {
+      animation: fadeIn 0.35s ease-out;
+    }
+
+    .animate-fade-in-up {
+      animation: fadeInUp 0.5s ease-out;
+    }
+
+    .animate-spin {
+      animation: spin 0.8s linear infinite;
+    }
+
+    .skeleton {
+      background: linear-gradient(90deg, #e2e8f0 25%, #f1f5f9 50%, #e2e8f0 75%);
+      background-size: 200% 100%;
+      animation: shimmer 1.5s infinite;
+      border-radius: 0.5rem;
+    }
+
+    /* ── スクロールバー ── */
+    ::-webkit-scrollbar {
+      width: 5px;
+      height: 5px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: #cbd5e1;
+      border-radius: 4px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: #94a3b8;
+    }
+
+    /* ── リサイズハンドル ── */
+    .resize-handle {
+      width: 5px;
+      background: transparent;
+      cursor: col-resize;
+      flex-shrink: 0;
+      position: relative;
+      transition: background 0.15s;
+      z-index: 10;
+    }
+
+    .resize-handle:hover,
+    .resize-handle.dragging {
+      background: #7C4DFF;
+    }
+
+    .resize-handle::after {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 3px;
+      height: 40px;
+      border-radius: 9999px;
+      background: #cbd5e1;
+      transition: background 0.15s;
+    }
+
+    .resize-handle:hover::after,
+    .resize-handle.dragging::after {
+      background: #7C4DFF;
+    }
+
+    /* サイドバー境界ハンドル */
+    .sidebar-resize-handle {
+      width: 4px;
+      background: transparent;
+      cursor: col-resize;
+      flex-shrink: 0;
+      transition: background 0.15s;
+      z-index: 10;
+    }
+
+    .sidebar-resize-handle:hover,
+    .sidebar-resize-handle.dragging {
+      background: #7C4DFF22;
+    }
+
+    /* ── エディタ ── */
+    .editor-textarea {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.875rem;
+      line-height: 1.75;
+      resize: none;
+      tab-size: 2;
+    }
+
+    /* ── Markdown プレビュー ── */
+    .markdown-preview h1 {
+      font-size: 1.4rem;
+      font-weight: 700;
+      color: #1e293b;
+      margin: 1.5rem 0 0.75rem;
+      border-bottom: 2px solid #e2e8f0;
+      padding-bottom: 0.5rem;
+    }
+
+    .markdown-preview h2 {
+      font-size: 1.25rem;
+      font-weight: 700;
+      color: #1e293b;
+      margin: 1.25rem 0 0.5rem;
+    }
+
+    .markdown-preview h3 {
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: #334155;
+      margin: 1rem 0 0.4rem;
+    }
+
+    .markdown-preview p {
+      margin: 0.7rem 0;
+      line-height: 1.85;
+    }
+
+    .markdown-preview ul {
+      margin: 0.7rem 0;
+      padding-left: 0;
+      list-style-type: none;
+    }
+
+    .markdown-preview ol {
+      margin: 0.7rem 0;
+      padding-left: 1.5rem;
+    }
+
+    .markdown-preview ul>li {
+      margin: 0.35rem 0;
+      line-height: 1.7;
+      padding-left: 1.2rem;
+      position: relative;
+    }
+
+    .markdown-preview ul>li::before {
+      content: '・';
+      position: absolute;
+      left: 0;
+      color: #475569;
+    }
+
+    .markdown-preview ol li {
+      margin: 0.35rem 0;
+      line-height: 1.7;
+    }
+
+    .markdown-preview blockquote {
+      border-left: 4px solid #7C4DFF;
+      background: #f5f3ff;
+      padding: 0.75rem 1rem;
+      margin: 0.75rem 0;
+      border-radius: 0 0.5rem 0.5rem 0;
+      color: #4c1d95;
+    }
+
+    .markdown-preview code {
+      background: #f1f5f9;
+      padding: 0.1rem 0.35rem;
+      border-radius: 0.25rem;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.85rem;
+      color: #7C4DFF;
+    }
+
+    .markdown-preview pre {
+      background: #1e293b;
+      color: #e2e8f0;
+      padding: 1rem;
+      border-radius: 0.75rem;
+      overflow-x: auto;
+      margin: 1rem 0;
+    }
+
+    .markdown-preview pre code {
+      background: none;
+      color: inherit;
+      padding: 0;
+    }
+
+    .markdown-preview table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1rem 0;
+    }
+
+    .markdown-preview th {
+      background: #f8fafc;
+      font-weight: 600;
+      text-align: left;
+      padding: 0.65rem 0.75rem;
+      border: 1px solid #e2e8f0;
+    }
+
+    .markdown-preview td {
+      padding: 0.65rem 0.75rem;
+      border: 1px solid #e2e8f0;
+    }
+
+    .markdown-preview a {
+      color: #7C4DFF;
+      text-decoration: underline;
+    }
+
+    .markdown-preview img {
+      max-width: 100%;
+      border-radius: 0.5rem;
+      margin: 0.5rem 0;
+    }
+
+    .markdown-preview hr {
+      border: none;
+      border-top: 2px solid #e2e8f0;
+      margin: 1.5rem 0;
+    }
+
+    /* ── トースト ── */
+    .toast {
+      position: fixed;
+      bottom: 1.5rem;
+      right: 1.5rem;
+      padding: 0.875rem 1.25rem;
+      border-radius: 0.75rem;
+      color: white;
+      font-weight: 600;
+      z-index: 9999;
+      animation: fadeInUp 0.3s ease-out;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .toast-success {
+      background: linear-gradient(135deg, #10B981, #059669);
+    }
+
+    .toast-error {
+      background: linear-gradient(135deg, #F43F5E, #E11D48);
+    }
+
+    .toast-info {
+      background: linear-gradient(135deg, #7C4DFF, #651FFF);
+    }
+
+    /* ── サイドバー ── */
+    .sidebar-collapsed {
+      width: 0 !important;
+      overflow: hidden;
+    }
+
+    /* ── フォルダツリー ── */
+    .folder-item {
+      transition: background 0.15s;
+    }
+
+    .folder-item:hover {
+      background: #f8fafc;
+    }
+
+    .article-item {
+      transition: all 0.15s;
+    }
+
+    .article-item:hover {
+      background: #f1f5f9;
+    }
+
+    .article-item.active {
+      background: #7C4DFF;
+      color: white;
+    }
+
+    .article-item.active .article-date {
+      color: #c4b5fd;
+    }
+
+    /* タイトル編集インプット */
+    .title-input {
+      background: transparent;
+      border: none;
+      outline: none;
+      font-size: 0.9rem;
+      font-weight: 700;
+      color: #1e293b;
+      width: 100%;
+    }
+
+    .title-input:focus {
+      background: #f8fafc;
+      border-radius: 0.25rem;
+      padding: 0 0.25rem;
+    }
+
+    /* タブ（モバイル） */
+    .tab-active {
+      border-bottom: 3px solid #7C4DFF;
+      color: #7C4DFF;
+      font-weight: 600;
+    }
+
+    /* サイドバートグルボタン */
+    .sidebar-toggle {
+      position: absolute;
+      top: 50%;
+      right: -14px;
+      transform: translateY(-50%);
+      width: 28px;
+      height: 28px;
+      border-radius: 9999px;
+      background: white;
+      border: 1px solid #e2e8f0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      z-index: 20;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+      transition: all 0.15s;
+    }
+
+    .sidebar-toggle:hover {
+      background: #7C4DFF;
+      border-color: #7C4DFF;
+      color: white;
+    }
+
+    .sidebar-toggle svg {
+      transition: transform 0.2s;
+    }
+
+    /* ── モバイルドロワー ── */
+    .mobile-drawer {
+      position: fixed;
+      top: 0;
+      left: 0;
+      bottom: 0;
+      width: 280px;
+      z-index: 50;
+      background: white;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 0 40px rgba(0, 0, 0, 0.2);
+      transform: translateX(-100%);
+      transition: transform 0.25s ease;
+    }
+
+    .mobile-drawer.open {
+      transform: translateX(0);
+    }
+
+    .mobile-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.45);
+      z-index: 40;
+    }
+
+    /* ── アフィリンクモーダル ── */
+    .aff-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.6);
+      backdrop-filter: blur(6px);
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      animation: fadeIn 0.2s ease-out;
+    }
+
+    .aff-modal {
+      background: white;
+      border-radius: 1rem;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      box-shadow: 0 25px 60px rgba(0, 0, 0, 0.3);
+      animation: fadeInUp 0.25s ease-out;
+      overflow: hidden;
+      min-width: 400px;
+      min-height: 300px;
+    }
+
+    .aff-tab {
+      padding: 0.625rem 1rem;
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: #94a3b8;
+      border: none;
+      border-bottom: 2px solid transparent;
+      background: none;
+      cursor: pointer;
+      transition: all 0.15s;
+      white-space: nowrap;
+    }
+
+    .aff-tab:hover {
+      color: #7C4DFF;
+    }
+
+    .aff-tab.active {
+      color: #7C4DFF;
+      border-bottom-color: #7C4DFF;
+    }
+
+    .aff-ta {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.8rem;
+      line-height: 1.7;
+      resize: none;
+      flex: 1;
+      width: 100%;
+      padding: 0.75rem 1rem;
+      border: 1px solid #e2e8f0;
+      border-radius: 0.5rem;
+      background: #f8fafc;
+      color: #334155;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    .aff-ta:focus {
+      border-color: #7C4DFF;
+      box-shadow: 0 0 0 3px rgba(124, 77, 255, 0.1);
+    }
+
+    /* モーダルリサイズハンドル */
+    .aff-resize-handle {
+      position: absolute;
+      bottom: 0;
+      right: 0;
+      width: 22px;
+      height: 22px;
+      cursor: se-resize;
+      display: flex;
+      align-items: flex-end;
+      justify-content: flex-end;
+      padding: 4px;
+      color: #cbd5e1;
+      z-index: 10;
+    }
+
+    .aff-resize-handle:hover {
+      color: #7C4DFF;
+    }
+
+    /* OGPカード（Amazon風：テキスト左・画像右） */
+    .ogp-card {
+      border: 1px solid #e2e8f0;
+      border-radius: 0.75rem;
+      overflow: hidden;
+      display: flex;
+      text-decoration: none !important;
+      color: inherit !important;
+      margin: 0.75rem 0;
+      background: #fff;
+      box-shadow: 0 1px 6px rgba(0, 0, 0, 0.08);
+      transition: box-shadow 0.15s;
+      min-height: 100px;
+      max-height: 160px;
+    }
+
+    .ogp-card:hover {
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.14);
+    }
+
+    .ogp-card-body {
+      padding: 0.875rem 1rem;
+      flex: 1;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      gap: 0.3rem;
+      min-width: 0;
+    }
+
+    .ogp-card-domain {
+      font-size: 0.68rem;
+      color: #94a3b8;
+    }
+
+    .ogp-card-title {
+      font-weight: 700;
+      font-size: 0.88rem;
+      line-height: 1.4;
+      color: #1e293b;
+      overflow: hidden;
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+    }
+
+    .ogp-card-desc {
+      font-size: 0.72rem;
+      color: #64748b;
+      overflow: hidden;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      margin-top: auto;
+    }
+
+    .ogp-card-image {
+      width: 140px;
+      min-width: 140px;
+      max-width: 140px;
+      object-fit: contain;
+      padding: 0.5rem;
+      background: #f8fafc;
+      flex-shrink: 0;
+    }
+
+    /* ── モバイルスワイプアクション（タッチデバイス専用） ── */
+    .swipe-row {
+      position: relative;
+      overflow: hidden;
+      border-radius: 0.375rem;
+    }
+
+    /* swipe-inner は常に幅100%でrevealボタンを隠す */
+    .swipe-inner {
+      transition: transform 0.2s ease;
+      will-change: transform;
+      width: 100%;
+    }
+
+    .swipe-inner.swiped {
+      transform: translateX(-84px);
+    }
+
+    /* デスクトップ（ホバー可能デバイス）ではスワイプボタン完全非表示 */
+    @media (hover: hover) and (pointer: fine) {
+      .swipe-actions-reveal {
+        display: none !important;
+      }
+    }
+
+    /* スワイプされていない状態では非表示、swiped-activeクラスがついた場合のみ表示 */
+    .swipe-actions-reveal {
+      position: absolute;
+      right: 0;
+      top: 0;
+      bottom: 0;
+      display: none;
+      width: 84px;
+      overflow: hidden;
+      border-radius: 0 0.375rem 0.375rem 0;
+    }
+
+    .swipe-row.swiped-active .swipe-actions-reveal {
+      display: flex;
+    }
+
+    .swipe-action-btn {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      border: none;
+      cursor: pointer;
+      font-size: 10px;
+      font-weight: 600;
+      gap: 3px;
+      padding: 0;
+      transition: opacity 0.1s;
+    }
+
+    .swipe-action-btn:active {
+      opacity: 0.75;
+    }
+
+    /* ── 長押しドラッグ（タッチ） ── */
+    .touch-drag-ghost {
+      position: fixed;
+      pointer-events: none;
+      z-index: 9999;
+      background: white;
+      border-radius: 8px;
+      padding: 7px 14px;
+      box-shadow: 0 8px 28px rgba(124, 77, 255, 0.35);
+      border: 2px solid #7C4DFF;
+      font-size: 12px;
+      font-weight: 600;
+      color: #7C4DFF;
+      max-width: 220px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      transform: translate(-50%, calc(-100% - 14px));
+    }
+
+    .touch-dragging-item {
+      opacity: 0.35;
+    }
+
+    .touch-drag-folder-target {
+      background: rgba(124, 77, 255, 0.12) !important;
+      outline: 2px dashed #7C4DFF !important;
+      outline-offset: -2px;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } = React;
+
+    // Marked.js: リンクを別タブで開く（v5 API：オブジェクト引数）
+    marked.use({
+      renderer: {
+        link({ href, title, text }) {
+          const safeHref = href || '';
+          const safeText = text || safeHref;
+          return `<a href="${safeHref}"${title ? ` title="${title}"` : ''} target="_blank" rel="noopener noreferrer">${safeText}</a>`;
+        }
+      }
+    });
+
+    const INFO_VIEWER_LINK = { id: 'info-viewer', title: 'info_viewer', url: 'https://blog-vercel-dun.vercel.app/info_viewer/' };
+
+    function isInfoViewerLink(link) {
+      if (!link || typeof link !== 'object') return false;
+      const linkId = String(link.id || '').trim();
+      const linkUrl = String(link.url || '').trim().replace(/\/+$/, '');
+      return linkId === INFO_VIEWER_LINK.id
+        || linkUrl === '/info_viewer/index.html'
+        || linkUrl === '/info_viewer'
+        || linkUrl === 'https://blog-vercel-dun.vercel.app/info_viewer';
+    }
+
+    function ensureInfoViewerLink(links) {
+      const normalizedLinks = Array.isArray(links) ? links.filter((link) => link && typeof link === 'object') : [];
+      const result = [{ ...INFO_VIEWER_LINK }];
+
+      normalizedLinks.forEach((link) => {
+        if (isInfoViewerLink(link)) return;
+        result.push(link);
+      });
+      return result;
+    }
+
+    // === API ヘルパー ===
+    const API_BASE = '/api';
+
+    async function fetchArticles(externalUrls = [], options = {}) {
+      const params = new URLSearchParams();
+      if (externalUrls && externalUrls.length > 0) params.set('externalUrls', JSON.stringify(externalUrls));
+      if (options.mode) params.set('mode', options.mode);
+      if (options.folderPath) params.set('folderPath', options.folderPath);
+      if (options.folderId) params.set('folderId', options.folderId);
+      if (options.h1Limit !== undefined) params.set('h1Limit', String(options.h1Limit));
+      const qs = params.toString() ? `?${params.toString()}` : '';
+      const res = await fetch(`${API_BASE}/articles${qs}`);
+      if (!res.ok) throw new Error('記事一覧の取得に失敗しました');
+      const data = await res.json();
+      if (options.raw) return data;
+      return data.articles || [];
+    }
+
+    async function fetchArticleContent(id) {
+      const res = await fetch(`${API_BASE}/articles?id=${id}`);
+      if (!res.ok) throw new Error('記事の読み込みに失敗しました');
+      const data = await res.json();
+      return data.content || '';
+    }
+
+    async function saveArticle(filename, content, fileId = null) {
+      const res = await fetch(`${API_BASE}/articles`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename, content, fileId }),
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || '保存に失敗しました');
+      }
+      return await res.json();
+    }
+
+    async function renameArticleApi(fileId, newName) {
+      const res = await fetch(`${API_BASE}/articles`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fileId, newName }),
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || 'リネームに失敗しました');
+      }
+      return await res.json();
+    }
+
+    async function deleteArticleApi(fileId) {
+      const res = await fetch(`${API_BASE}/articles`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fileId }),
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || '削除に失敗しました');
+      }
+      return await res.json();
+    }
+
+    async function duplicateArticleApi(fileId, newName, folderPath) {
+      const res = await fetch(`${API_BASE}/articles`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fileId, newName, folderPath }),
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || '複製に失敗しました');
+      }
+      return await res.json();
+    }
+
+    async function moveArticleApi(fileId, destFolderPath) {
+      const res = await fetch(`${API_BASE}/articles`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fileId, action: 'move', destFolderPath }),
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || '移動に失敗しました');
+      }
+      return await res.json();
+    }
+
+    async function triggerPipeline() {
+      const res = await fetch(`${API_BASE}/trigger`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'batch' }),
+      });
+      if (!res.ok) throw new Error('パイプラインの起動に失敗しました');
+      return await res.json();
+    }
+
+    async function triggerNoteDraft(fileIds) {
+      const ids = Array.isArray(fileIds) ? fileIds : [fileIds];
+      const res = await fetch(`${API_BASE}/note-draft`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fileIds: ids, noteTarget: 'blog_main' }),
+      });
+      if (!res.ok) throw new Error('note下書き投稿の起動に失敗しました');
+      return await res.json();
+    }
+
+    async function fetchNoteDraftUrl(fileId) {
+      try {
+        const res = await fetch(`${API_BASE}/note-draft?fileId=${encodeURIComponent(fileId)}`);
+        if (!res.ok) return null;
+        const data = await res.json();
+        return data.url || null;
+      } catch { return null; }
+    }
+
+    // === アフィリエイトリンク API（OneDrive Graph API 経由で同期） ===
+    async function fetchAffiliateMemos() {
+      const res = await fetch(`${API_BASE}/affiliate-links`);
+      if (!res.ok) throw new Error('アフィリンクの取得に失敗しました');
+      const data = await res.json();
+      return data.memos || { memo1: '' };
+    }
+
+    async function saveAffiliateMemos(memos) {
+      const res = await fetch(`${API_BASE}/affiliate-links`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ memos }),
+      });
+      if (!res.ok) throw new Error('アフィリンクの保存に失敗しました');
+      return await res.json();
+    }
+
+    // === フォルダ階層構築ユーティリティ ===
+    // APIから返される article.path（OneDriveの実際のフォルダ階層）を使って
+    // 多段階ネストツリーを構築する
+    // 戻り値: { _articles: [], subfolders: { "フォルダ名": { _articles: [], subfolders: {} } } }
+    function createFolderNode(path = '') {
+      return { _articles: [], subfolders: {}, _meta: { path, loaded: true, childCount: 0 } };
+    }
+
+    function ensureFolderNode(root, folderPath) {
+      const parts = (folderPath || '').trim().split('/').filter(Boolean);
+      let node = root;
+      let acc = '';
+      for (const part of parts) {
+        acc = acc ? `${acc}/${part}` : part;
+        if (!node.subfolders[part]) node.subfolders[part] = createFolderNode(acc);
+        node = node.subfolders[part];
+      }
+      return node;
+    }
+
+    function buildFolderTree(articles, folderMeta = {}) {
+      const root = createFolderNode('');
+      Object.values(folderMeta || {}).forEach((meta) => {
+        if (!meta || !meta.path) return;
+        const node = ensureFolderNode(root, meta.path);
+        node._meta = { ...node._meta, ...meta };
+      });
+
+      for (const article of articles) {
+        const node = ensureFolderNode(root, article.path || '');
+        node._articles.push(article);
+      }
+      return root;
+    }
+
+    // ノード以下の全記事数を再帰的に合計
+    function countArticles(node) {
+      const knownCount = node._articles.length +
+        Object.values(node.subfolders).reduce((s, c) => s + countArticles(c), 0);
+      const childCount = node._meta && Number.isFinite(node._meta.childCount) ? node._meta.childCount : 0;
+      return node._meta && node._meta.loaded === false ? Math.max(knownCount, childCount) : knownCount;
+    }
+
+    // === Toast コンポーネント ===
+    function Toast({ message, type, onClose }) {
+      useEffect(() => {
+        const t = setTimeout(onClose, 3500);
+        return () => clearTimeout(t);
+      }, [onClose]);
+
+      const icons = {
+        success: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M20 6L9 17l-5-5" /></svg>,
+        error: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6L6 18M6 6l12 12" /></svg>,
+        info: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><circle cx="12" cy="12" r="10" /><path d="M12 8v4m0 4h.01" /></svg>,
+      };
+
+      return (
+        <div className={`toast toast-${type}`}>
+          {icons[type]}
+          {message}
+        </div>
+      );
+    }
+
+    // === リサイズフック ===
+    function useResizable(initialWidth, minWidth, maxWidth) {
+      const [width, setWidth] = useState(initialWidth);
+      const dragging = useRef(false);
+      const startX = useRef(0);
+      const startW = useRef(0);
+
+      const onMouseDown = useCallback((e) => {
+        dragging.current = true;
+        startX.current = e.clientX;
+        startW.current = width;
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+      }, [width]);
+
+      useEffect(() => {
+        const onMove = (e) => {
+          if (!dragging.current) return;
+          const delta = e.clientX - startX.current;
+          const newW = Math.min(maxWidth, Math.max(minWidth, startW.current + delta));
+          setWidth(newW);
+        };
+        const onUp = () => {
+          if (!dragging.current) return;
+          dragging.current = false;
+          document.body.style.cursor = '';
+          document.body.style.userSelect = '';
+        };
+        window.addEventListener('mousemove', onMove);
+        window.addEventListener('mouseup', onUp);
+        return () => {
+          window.removeEventListener('mousemove', onMove);
+          window.removeEventListener('mouseup', onUp);
+        };
+      }, [minWidth, maxWidth]);
+
+      return [width, onMouseDown];
+    }
+
+    // === フォルダツリー コンポーネント ===
+    function FolderTree({ articles, selectedId, onSelect, loading, onDeleteArticle, onDuplicateArticle, onMoveArticle, hiddenFolders, onHideFolder, selectMode, selectedIds, onToggleSelect, onEnterSelectMode, onMultiSelect, onRangeSelect, multiSelectedIds, articleH1Cache, folderMeta = {}, folderLoading = {}, onLoadFolder }) {
+      const [openFolders, setOpenFolders] = useState({});
+      const [ctxMenu, setCtxMenu] = useState({ visible: false, x: 0, y: 0, article: null });
+      const [folderCtxMenu, setFolderCtxMenu] = useState({ visible: false, x: 0, y: 0, path: '' });
+      const [confirmDelete, setConfirmDelete] = useState(null);
+      const [dragOver, setDragOver] = useState(null); // ドロップ先フォルダパス（マウス）
+      const dragArticleRef = useRef(null); // ドラッグ中の記事
+      const lastClickedIdRef = useRef(null); // Shift範囲選択の起点
+      // ── モバイルタッチ用 state/ref ──
+      const [swipedId, setSwipedId] = useState(null);         // 左スワイプ中の記事ID
+      const [dragGhostInfo, setDragGhostInfo] = useState(null); // 長押しゴースト { x, y, name }
+      const [touchDragOver, _setTouchDragOver] = useState(null); // タッチドラッグ中のフォルダ
+      const [visibleArticleLimit, setVisibleArticleLimit] = useState(3);
+      const touchDragOverRef = useRef(null);
+      const setTouchDragOver = (v) => { touchDragOverRef.current = v; _setTouchDragOver(v); };
+      const touchRef = useRef({ startX: 0, startY: 0, article: null, mode: null, timer: null });
+      const sbTouchContainerRef = useRef(null); // スクロール防止用コンテナ ref
+
+      // 長押しドラッグ中は touchmove のデフォルト（スクロール）を防ぐ（非パッシブ登録）
+      useEffect(() => {
+        const el = sbTouchContainerRef.current;
+        if (!el) return;
+        const prevent = (e) => { if (touchRef.current.mode === 'drag') e.preventDefault(); };
+        el.addEventListener('touchmove', prevent, { passive: false });
+        return () => el.removeEventListener('touchmove', prevent);
+      }, []);
+
+      const rootNode = useMemo(() => buildFolderTree(articles, folderMeta), [articles, folderMeta]);
+
+      useEffect(() => {
+        if (visibleArticleLimit >= articles.length) return;
+        let cancelled = false;
+        let idleId = null;
+        let timerId = null;
+        const run = () => {
+          if (cancelled) return;
+          setVisibleArticleLimit(limit => Math.min(limit + 20, articles.length));
+        };
+        if (window.requestIdleCallback) {
+          idleId = window.requestIdleCallback(run, { timeout: 300 });
+        } else {
+          timerId = setTimeout(run, 120);
+        }
+        return () => {
+          cancelled = true;
+          if (idleId !== null && window.cancelIdleCallback) window.cancelIdleCallback(idleId);
+          if (timerId !== null) clearTimeout(timerId);
+        };
+      }, [articles.length, visibleArticleLimit]);
+
+      // 初期状態: デフォルトは閉じた状態にする
+      useEffect(() => {
+        // 以前は第1階層を展開していたが、ユーザー要望によりデフォルトは閉じた状態に
+        // const initOpen = {};
+        // Object.keys(rootNode.subfolders).forEach(k => { initOpen[k] = true; });
+        // setOpenFolders(initOpen);
+      }, []);
+
+      // コンテキストメニュー外クリックで閉じる
+      useEffect(() => {
+        if (!ctxMenu.visible && !folderCtxMenu.visible) return;
+        const close = () => {
+          setCtxMenu(m => ({ ...m, visible: false }));
+          setFolderCtxMenu(m => ({ ...m, visible: false }));
+        };
+        window.addEventListener('click', close);
+        window.addEventListener('contextmenu', close);
+        return () => { window.removeEventListener('click', close); window.removeEventListener('contextmenu', close); };
+      }, [ctxMenu.visible, folderCtxMenu.visible]);
+
+      const toggleFolder = (path, meta) => {
+        const willOpen = !openFolders[path];
+        setOpenFolders(prev => ({ ...prev, [path]: !prev[path] }));
+        if (willOpen && meta && meta.loaded === false && !folderLoading[path] && onLoadFolder) {
+          onLoadFolder(path, meta);
+        }
+      };
+
+      // ── モバイルタッチ: 長押しドラッグ & 左スワイプ ──
+      const LONG_PRESS_MS = 500;
+      const SWIPE_THRESHOLD = 55;
+
+      const onArticleTouchStart = (e, article) => {
+        const t = e.touches[0];
+        touchRef.current = { startX: t.clientX, startY: t.clientY, article, mode: null, timer: null };
+        touchRef.current.timer = setTimeout(() => {
+          touchRef.current.mode = 'drag';
+          dragArticleRef.current = (multiSelectedIds && multiSelectedIds.size > 0 && multiSelectedIds.has(article.id))
+            ? articles.filter(a => multiSelectedIds.has(a.id))
+            : article;
+          if (navigator.vibrate) navigator.vibrate(40);
+          setDragGhostInfo({ x: t.clientX, y: t.clientY, name: article.name.replace(/^\d{8}_\d{4}_/, '').replace('.md', '') });
+          setSwipedId(null);
+        }, LONG_PRESS_MS);
+      };
+
+      const onArticleTouchMove = (e) => {
+        const tr = touchRef.current;
+        if (!tr.article) return;
+        const t = e.touches[0];
+        const dx = t.clientX - tr.startX;
+        const dy = t.clientY - tr.startY;
+
+        if (tr.mode === 'drag') {
+          // preventDefault は非パッシブリスナー側で処理
+          setDragGhostInfo(prev => prev ? { ...prev, x: t.clientX, y: t.clientY } : null);
+          const el = document.elementFromPoint(t.clientX, t.clientY);
+          const folderEl = el && el.closest('[data-folder-path]');
+          setTouchDragOver(folderEl ? folderEl.dataset.folderPath : null);
+          return;
+        }
+        if (tr.mode === null) {
+          // 縦スクロール優先: 長押しキャンセル
+          if (Math.abs(dy) > 12 && Math.abs(dy) > Math.abs(dx)) {
+            clearTimeout(tr.timer); tr.mode = 'scroll';
+          } else if (dx < -12) {
+            // 左スワイプ確定: 長押しキャンセル
+            clearTimeout(tr.timer); tr.mode = 'swipe';
+          }
+        }
+      };
+
+      const onArticleTouchEnd = (e) => {
+        const tr = touchRef.current;
+        if (!tr.article) return;
+        clearTimeout(tr.timer);
+        const t = e.changedTouches[0];
+        const dx = t.clientX - tr.startX;
+
+        if (tr.mode === 'drag') {
+          setDragGhostInfo(null);
+          const over = touchDragOverRef.current;
+          setTouchDragOver(null);
+          const dragged = dragArticleRef.current;
+          dragArticleRef.current = null;
+          if (dragged !== null && over !== null) {
+            const targets = Array.isArray(dragged) ? dragged : [dragged];
+            const toMove = targets.filter(a => a.path !== over);
+            if (toMove.length > 0) onMoveArticle && onMoveArticle(toMove, over);
+          }
+        } else if (dx < -SWIPE_THRESHOLD) {
+          setSwipedId(tr.article.id);
+        } else if (dx > 20 && swipedId === tr.article.id) {
+          setSwipedId(null);
+        }
+        touchRef.current.article = null;
+        touchRef.current.mode = null;
+      };
+
+      const handleContextMenu = (e, article) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const MENU_W = 190, MENU_H = 170;
+        const x = Math.min(e.clientX, window.innerWidth - MENU_W - 8);
+        const y = Math.min(e.clientY, window.innerHeight - MENU_H - 8);
+        setCtxMenu({ visible: true, x, y, article });
+      };
+
+      const handleFolderContextMenu = (e, folderPath) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const x = Math.min(e.clientX, window.innerWidth - 180 - 8);
+        const y = Math.min(e.clientY, window.innerHeight - 60 - 8);
+        setFolderCtxMenu({ visible: true, x, y, path: folderPath });
+      };
+
+      if (loading) {
+        return (
+          <div className="p-3 space-y-2">
+            {[1, 2, 3, 4, 5].map(i => <div key={i} className="skeleton h-10 w-full" />)}
+          </div>
+        );
+      }
+
+      if (articles.length === 0) {
+        return (
+          <div className="text-center text-slate-400 text-xs mt-8 px-4">
+            <svg className="mx-auto mb-3 text-slate-300" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8" />
+            </svg>
+            記事がまだありません。<br />新規作成するかパイプラインを実行してください。
+          </div>
+        );
+      }
+
+      // 記事アイテムレンダリング
+      const renderArticle = (article) => {
+        const isActive = article.id === selectedId;
+        const isChecked = selectMode && selectedIds && selectedIds.has(article.id);
+        const isMultiSelected = multiSelectedIds && multiSelectedIds.has(article.id);
+        const highlighted = isChecked || isMultiSelected;
+        // 優先順位: APIのh1Title > ローカルH1キャッシュ > ファイル名フォールバック
+        const displayName = article.h1Title
+          || (articleH1Cache && articleH1Cache[article.id])
+          || article.name.replace(/^\d{8}_\d{4}_/, '').replace('.md', '');
+        const date = new Date(article.lastModified).toLocaleDateString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+        const handleClick = (e) => {
+          // Ctrl/Cmd クリック: 個別トグル
+          if (e.ctrlKey || e.metaKey) {
+            e.preventDefault();
+            onMultiSelect && onMultiSelect(article.id);
+            lastClickedIdRef.current = article.id;
+            return;
+          }
+          // Shift クリック: 起点から範囲選択
+          if (e.shiftKey && lastClickedIdRef.current) {
+            e.preventDefault();
+            onRangeSelect && onRangeSelect(lastClickedIdRef.current, article.id);
+            return;
+          }
+          // 修飾キーなし
+          lastClickedIdRef.current = article.id;
+          if (selectMode) { onToggleSelect(article.id); return; }
+          // 複数選択中なら選択解除して通常選択
+          if (multiSelectedIds && multiSelectedIds.size > 0) {
+            onMultiSelect && onMultiSelect(null); // 全クリア
+          }
+          onSelect(article);
+        };
+
+        // 長押しドラッグ中にこの記事が対象かどうか
+        const isTouchDragging = dragGhostInfo && dragArticleRef.current &&
+          (Array.isArray(dragArticleRef.current)
+            ? dragArticleRef.current.some(a => a.id === article.id)
+            : dragArticleRef.current.id === article.id);
+
+        return (
+          <div
+            key={article.id}
+            className={`swipe-row mb-0.5${swipedId === article.id ? ' swiped-active' : ''}`}
+            onTouchStart={(e) => onArticleTouchStart(e, article)}
+            onTouchMove={onArticleTouchMove}
+            onTouchEnd={onArticleTouchEnd}
+          >
+            {/* 左スワイプで現れるアクションボタン */}
+            <div className="swipe-actions-reveal">
+              <button
+                className="swipe-action-btn"
+                style={{ background: '#9c6ffc', color: 'white' }}
+                onPointerDown={e => e.stopPropagation()}
+                onClick={(e) => { e.stopPropagation(); setSwipedId(null); onDuplicateArticle(article); }}
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" /></svg>
+                複製
+              </button>
+              <button
+                className="swipe-action-btn"
+                style={{ background: '#651FFF', color: 'white' }}
+                onPointerDown={e => e.stopPropagation()}
+                onClick={(e) => { e.stopPropagation(); setSwipedId(null); setConfirmDelete(article); }}
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14H6L5 6" /><path d="M10 11v6M14 11v6" /><path d="M9 6V4h6v2" /></svg>
+                削除
+              </button>
+            </div>
+
+            {/* スライドするコンテンツ（マウスD&Dも維持） */}
+            <div
+              className={`swipe-inner flex items-center gap-1${swipedId === article.id ? ' swiped' : ''}${isTouchDragging ? ' touch-dragging-item' : ''}`}
+              draggable
+              onDragStart={(e) => {
+                dragArticleRef.current = (multiSelectedIds && multiSelectedIds.size > 0 && multiSelectedIds.has(article.id))
+                  ? articles.filter(a => multiSelectedIds.has(a.id))
+                  : article;
+                e.dataTransfer.effectAllowed = 'move';
+                e.dataTransfer.setData('text/plain', article.id);
+              }}
+              onDragEnd={() => { dragArticleRef.current = null; setDragOver(null); }}
+            >
+              {selectMode && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); onToggleSelect(article.id); }}
+                  className="flex-shrink-0 w-5 h-5 flex items-center justify-center rounded border transition-colors"
+                  style={{ borderColor: isChecked ? '#7C4DFF' : '#cbd5e1', background: isChecked ? '#7C4DFF' : 'white' }}
+                >
+                  {isChecked && <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3"><path d="M20 6L9 17l-5-5" /></svg>}
+                </button>
+              )}
+              <button
+                onClick={handleClick}
+                onContextMenu={(e) => handleContextMenu(e, article)}
+                className={`flex-1 min-w-0 text-left rounded-md px-2 py-2 article-item ${isActive && !selectMode && !highlighted ? 'active' : ''} ${highlighted ? 'bg-purple-50' : ''}`}
+                id={`article-item-${article.id}`}
+                style={{ cursor: 'grab', outline: isMultiSelected ? '1.5px solid #7C4DFF' : undefined, outlineOffset: '-1px' }}
+              >
+                <div className={`text-xs font-medium truncate ${isActive && !selectMode && !highlighted ? 'text-white' : highlighted ? 'text-purple-700' : 'text-slate-700'}`}>
+                  <svg className="inline mr-1 mb-0.5 opacity-60" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><path d="M14 2v6h6" /></svg>
+                  {displayName}
+                </div>
+                <div className={`text-xs mt-0.5 article-date ${isActive && !selectMode && !highlighted ? 'text-purple-200' : 'text-slate-400'}`}>
+                  {date} · {(article.size / 1024).toFixed(1)}KB
+                </div>
+              </button>
+            </div>
+          </div>
+        );
+      };
+
+      // フォルダノードを再帰的にレンダリング（多段階対応）
+      const renderFolderNode = (node, folderName, folderPath, depth = 0) => {
+        // 非表示フォルダはスキップ
+        if (hiddenFolders && hiddenFolders.has(folderPath)) return null;
+
+        const isOpen = openFolders[folderPath];
+        const isDragTarget = dragOver === folderPath;
+        const isFolderLoading = !!folderLoading[folderPath];
+        const total = countArticles(node);
+        const subKeys = Object.keys(node.subfolders).sort((a, b) => b.localeCompare(a));
+        const indent = depth * 12;
+
+        return (
+          <div key={folderPath} className="mb-0.5">
+            {/* フォルダヘッダー（ドロップ受付） */}
+            <button
+              data-folder-path={folderPath}
+              onClick={() => toggleFolder(folderPath, node._meta)}
+              onContextMenu={(e) => handleFolderContextMenu(e, folderPath)}
+              onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDragOver(folderPath); }}
+              onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setDragOver(null); }}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDragOver(null);
+                const dragged = dragArticleRef.current;
+                if (!dragged) return;
+                // 複数選択ドラッグ（配列）か単一か
+                const targets = Array.isArray(dragged) ? dragged : [dragged];
+                const toMove = targets.filter(a => a.path !== folderPath);
+                if (toMove.length === 0) return;
+                onMoveArticle && onMoveArticle(toMove, folderPath);
+              }}
+              className={`w-full flex items-center gap-1.5 px-2 py-1.5 rounded-md folder-item text-left text-xs font-semibold text-slate-500 hover:text-slate-700${touchDragOver === folderPath ? ' touch-drag-folder-target' : ''}`}
+              style={{
+                paddingLeft: `${8 + indent}px`,
+                background: isDragTarget ? 'rgba(124,77,255,0.1)' : undefined,
+                outline: isDragTarget ? '2px dashed #7C4DFF' : undefined,
+                outlineOffset: '-2px',
+              }}
+            >
+              <svg
+                width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                style={{ transform: isOpen ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.15s', flexShrink: 0 }}
+              >
+                <path d="M9 18l6-6-6-6" />
+              </svg>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill={isOpen ? '#7C4DFF' : 'none'} stroke={isOpen ? '#7C4DFF' : 'currentColor'} strokeWidth="2" style={{ flexShrink: 0 }}>
+                <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z" />
+              </svg>
+              <span className="truncate" style={{ color: isOpen ? '#7C4DFF' : undefined }}>{folderName}</span>
+              <span className="ml-auto bg-slate-100 text-slate-400 text-xs rounded-full px-1.5 py-0.5 leading-none flex-shrink-0">{isFolderLoading ? '...' : total}</span>
+            </button>
+
+            {isOpen && (
+              <div style={{ marginLeft: `${4 + indent}px`, paddingLeft: '8px', borderLeft: '1px solid #f1f5f9' }}>
+                {isFolderLoading && <div className="skeleton h-8 w-full my-1" />}
+                {/* サブフォルダ（再帰） */}
+                {subKeys.map(k => renderFolderNode(node.subfolders[k], k, folderPath ? `${folderPath}/${k}` : k, depth + 1))}
+                {/* このフォルダ内の記事 */}
+                {node._articles.slice(0, visibleArticleLimit).map(a => renderArticle(a))}
+              </div>
+            )}
+          </div>
+        );
+      };
+
+      const rootSubKeys = Object.keys(rootNode.subfolders).sort((a, b) => b.localeCompare(a));
+
+      return (
+        <>
+          <div
+            ref={sbTouchContainerRef}
+            className="px-2 pb-2"
+            onTouchStart={(e) => { if (swipedId && !e.target.closest('.swipe-row')) setSwipedId(null); }}
+          >
+            {/* ルート直下のフォルダを再帰レンダリング */}
+            {rootSubKeys.map(k => renderFolderNode(rootNode.subfolders[k], k, k, 0))}
+
+            {/* ルート直下の記事（フォルダなし） */}
+            {rootNode._articles.length > 0 && (
+              <div
+                data-folder-path=""
+                onDragOver={(e) => { e.preventDefault(); setDragOver(''); }}
+                onDragLeave={() => setDragOver(null)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setDragOver(null);
+                  const dragged = dragArticleRef.current;
+                  if (!dragged) return;
+                  const targets = Array.isArray(dragged) ? dragged : [dragged];
+                  const toMove = targets.filter(a => a.path !== '');
+                  if (toMove.length === 0) return;
+                  onMoveArticle && onMoveArticle(toMove, '');
+                }}
+                className={touchDragOver === '' ? 'touch-drag-folder-target' : ''}
+                style={{ borderRadius: '6px', outline: dragOver === '' ? '2px dashed #7C4DFF' : undefined, outlineOffset: '-2px' }}
+              >
+                <div className="px-2 py-1 text-xs text-slate-400 font-semibold">その他</div>
+                {rootNode._articles.slice(0, visibleArticleLimit).map(a => renderArticle(a))}
+              </div>
+            )}
+          </div>
+
+          {/* 長押しドラッグゴースト */}
+          {dragGhostInfo && (
+            <div className="touch-drag-ghost" style={{ left: dragGhostInfo.x, top: dragGhostInfo.y }}>
+              {dragGhostInfo.name}
+            </div>
+          )}
+
+          {/* ── 右クリックコンテキストメニュー ── */}
+          {ctxMenu.visible && (
+            <div
+              onClick={e => e.stopPropagation()}
+              style={{ position: 'fixed', top: ctxMenu.y, left: ctxMenu.x, zIndex: 9999, background: 'white', borderRadius: '8px', boxShadow: '0 4px 24px rgba(0,0,0,0.15)', border: '1px solid #e2e8f0', minWidth: '190px', padding: '4px 0', overflow: 'hidden' }}
+            >
+              <button
+                onClick={() => { onEnterSelectMode(ctxMenu.article); setCtxMenu(m => ({ ...m, visible: false })); }}
+                onMouseEnter={e => e.currentTarget.style.background = '#f5f3ff'} onMouseLeave={e => e.currentTarget.style.background = 'none'}
+                style={{ display: 'flex', alignItems: 'center', gap: '8px', width: '100%', padding: '9px 14px', background: 'none', border: 'none', cursor: 'pointer', fontSize: '13px', color: '#7C4DFF', textAlign: 'left', fontWeight: 600 }}
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><rect x="3" y="5" width="4" height="4" rx="1" /><path d="M10 7h11M10 12h11M10 17h11" /><rect x="3" y="10" width="4" height="4" rx="1" /><rect x="3" y="15" width="4" height="4" rx="1" /></svg>
+                選択
+              </button>
+              <div style={{ height: '1px', background: '#e2e8f0', margin: '4px 0' }} />
+              <button
+                onClick={() => { onDuplicateArticle(ctxMenu.article); setCtxMenu(m => ({ ...m, visible: false })); }}
+                onMouseEnter={e => e.currentTarget.style.background = '#f1f5f9'} onMouseLeave={e => e.currentTarget.style.background = 'none'}
+                style={{ display: 'flex', alignItems: 'center', gap: '8px', width: '100%', padding: '9px 14px', background: 'none', border: 'none', cursor: 'pointer', fontSize: '13px', color: '#334155', textAlign: 'left' }}
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" /></svg>
+                複製
+              </button>
+              <button
+                onClick={() => { setConfirmDelete(ctxMenu.article); setCtxMenu(m => ({ ...m, visible: false })); }}
+                onMouseEnter={e => e.currentTarget.style.background = '#fff1f2'} onMouseLeave={e => e.currentTarget.style.background = 'none'}
+                style={{ display: 'flex', alignItems: 'center', gap: '8px', width: '100%', padding: '9px 14px', background: 'none', border: 'none', cursor: 'pointer', fontSize: '13px', color: '#ef4444', textAlign: 'left' }}
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14H6L5 6" /><path d="M10 11v6M14 11v6" /><path d="M9 6V4h6v2" /></svg>
+                削除
+              </button>
+              <div style={{ height: '1px', background: '#e2e8f0', margin: '4px 0' }} />
+              <button
+                onClick={() => {
+                  window.open(ctxMenu.article.webUrl, '_blank');
+                  setCtxMenu(m => ({ ...m, visible: false }));
+                }}
+                onMouseEnter={e => e.currentTarget.style.background = '#f1f5f9'} onMouseLeave={e => e.currentTarget.style.background = 'none'}
+                style={{ display: 'flex', alignItems: 'center', gap: '8px', width: '100%', padding: '9px 14px', background: 'none', border: 'none', cursor: 'pointer', fontSize: '13px', color: '#334155', textAlign: 'left' }}
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6" /><polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" /></svg>
+                OneDriveで開く
+              </button>
+              <button
+                hidden
+                onClick={() => {
+                  const a = ctxMenu.article;
+                  if (a.webUrl) {
+                    window.open(a.webUrl, '_blank');
+                  }
+                  setCtxMenu(m => ({ ...m, visible: false }));
+                }}
+                onMouseEnter={e => e.currentTarget.style.background = '#f1f5f9'} onMouseLeave={e => e.currentTarget.style.background = 'none'}
+                style={{ display: 'flex', alignItems: 'center', gap: '8px', width: '100%', padding: '9px 14px', background: 'none', border: 'none', cursor: 'pointer', fontSize: '13px', color: '#334155', textAlign: 'left' }}
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="3" width="20" height="14" rx="2" /><path d="M8 21h8M12 17v4" /></svg>
+                エクスプローラーで表示
+              </button>
+            </div>
+          )}
+
+          {/* ── フォルダ右クリックメニュー ── */}
+          {folderCtxMenu.visible && (
+            <div
+              onClick={e => e.stopPropagation()}
+              style={{ position: 'fixed', top: folderCtxMenu.y, left: folderCtxMenu.x, zIndex: 9999, background: 'white', borderRadius: '8px', boxShadow: '0 4px 24px rgba(0,0,0,0.15)', border: '1px solid #e2e8f0', minWidth: '180px', padding: '4px 0' }}
+            >
+              <button
+                onClick={() => { onHideFolder && onHideFolder(folderCtxMenu.path); setFolderCtxMenu(m => ({ ...m, visible: false })); }}
+                onMouseEnter={e => e.currentTarget.style.background = '#fff7ed'} onMouseLeave={e => e.currentTarget.style.background = 'none'}
+                style={{ display: 'flex', alignItems: 'center', gap: '8px', width: '100%', padding: '9px 14px', background: 'none', border: 'none', cursor: 'pointer', fontSize: '13px', color: '#ea580c', textAlign: 'left' }}
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24" /><line x1="1" y1="1" x2="23" y2="23" /></svg>
+                サイドバーから非表示
+              </button>
+            </div>
+          )}
+
+          {/* ── 削除確認ダイアログ ── */}
+          {confirmDelete && (
+            <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 10000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <div style={{ background: 'white', borderRadius: '12px', padding: '24px', maxWidth: '360px', width: '90%', boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
+                <div style={{ fontSize: '15px', fontWeight: 700, color: '#1e293b', marginBottom: '8px' }}>記事を削除しますか？</div>
+                <div style={{ fontSize: '13px', color: '#64748b', marginBottom: '20px', lineHeight: '1.6' }}>
+                  「{confirmDelete.name.replace(/^\d{8}_\d{4}_/, '').replace('.md', '')}」を削除します。<br />この操作は取り消せません。
+                </div>
+                <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+                  <button
+                    onClick={() => setConfirmDelete(null)}
+                    style={{ padding: '8px 16px', borderRadius: '8px', border: '1px solid #e2e8f0', background: 'white', color: '#64748b', cursor: 'pointer', fontSize: '13px', fontWeight: 600 }}
+                  >キャンセル</button>
+                  <button
+                    onClick={() => { onDeleteArticle(confirmDelete); setConfirmDelete(null); }}
+                    style={{ padding: '8px 16px', borderRadius: '8px', border: 'none', background: '#ef4444', color: 'white', cursor: 'pointer', fontSize: '13px', fontWeight: 600 }}
+                  >削除する</button>
+                </div>
+              </div>
+            </div>
+          )}
+        </>
+      );
+    }
+
+    // === サイドバー コンポーネント ===
+    function Sidebar({ articles, selectedId, onSelect, onNewArticle, loading, sidebarWidth, onResizeStart, isCollapsed, onToggle, mobileSidebarOpen, onMobileClose, onDeleteArticle, onDuplicateArticle, onMoveArticle, selectMode, selectedIds, onToggleSelect, onEnterSelectMode, multiSelectedIds, onMultiSelect, onRangeSelect, setAffModalOpen, articleH1Cache, folderMeta = {}, folderLoading = {}, onLoadFolder, externalFolderUrls = [], setExternalFolderUrls, onRefreshArticles }) {
+      // 非表示フォルダ管理（localStorageで永続化）
+      const [hiddenFolders, setHiddenFolders] = useState(() => {
+        try { return new Set(JSON.parse(localStorage.getItem('sb_hiddenFolders') || '[]')); }
+        catch { return new Set(); }
+      });
+      const [showFolderPicker, setShowFolderPicker] = useState(false);
+      const [showLinkPicker, setShowLinkPicker] = useState(false);
+      // リンク集のドラッグ＆ドロップ（HTML5対応）用ステート
+      const [customLinks, setCustomLinks] = useState(() => {
+        try {
+          const saved = JSON.parse(localStorage.getItem('sb_customLinks'));
+          if (saved && Array.isArray(saved) && saved.length > 0) return ensureInfoViewerLink(saved);
+        } catch { }
+        return ensureInfoViewerLink([
+          { id: 'mobile-links', title: 'モバイルリンク集', url: '/links.html' },
+          { id: 'note', title: 'note', url: 'https://note.com/startupm' },
+          { id: 'yt-sheet', title: 'YouTube動画取得シート', url: 'https://docs.google.com/spreadsheets/d/1cw6RC1XX4nAYvfZrBq7nmTtrr2oGFsSI0r_pVIxGxAc/edit?pli=1&gid=983578135#gid=983578135' }
+        ]);
+      });
+
+      // 全フォルダパス一覧（記事のpathから導出）
+      const [linkDragState, setLinkDragState] = useState({ isDragging: false, startIndex: null, overIndex: null });
+      const [linkTouchGhost, setLinkTouchGhost] = useState(null);
+      const linkTouchRef = useRef({ timer: null, startX: 0, startY: 0, startIndex: null, overIndex: null, dragging: false, blockClickUntil: 0 });
+      const LINK_LONG_PRESS_MS = 350;
+
+      const persistCustomLinks = useCallback((updater) => {
+        setCustomLinks(prevLinks => {
+          const nextLinks = ensureInfoViewerLink(typeof updater === 'function' ? updater(prevLinks) : updater);
+          try { localStorage.setItem('sb_customLinks', JSON.stringify(nextLinks)); } catch { }
+          return nextLinks;
+        });
+      }, []);
+
+      useEffect(() => {
+        try { localStorage.setItem('sb_customLinks', JSON.stringify(ensureInfoViewerLink(customLinks))); } catch { }
+      }, []);
+
+      const reorderCustomLinks = useCallback((startIndex, targetIndex) => {
+        if (!Number.isInteger(startIndex) || !Number.isInteger(targetIndex) || startIndex === targetIndex) return;
+        persistCustomLinks((links) => {
+          if (startIndex < 0 || targetIndex < 0 || startIndex >= links.length || targetIndex >= links.length) return links;
+          const newLinks = [...links];
+          const [moved] = newLinks.splice(startIndex, 1);
+          newLinks.splice(targetIndex, 0, moved);
+          return newLinks;
+        });
+      }, [persistCustomLinks]);
+
+      const moveCustomLinkByStep = useCallback((index, delta) => {
+        const targetIndex = index + delta;
+        reorderCustomLinks(index, targetIndex);
+      }, [reorderCustomLinks]);
+
+      const clearLinkTouchTimer = useCallback(() => {
+        if (linkTouchRef.current.timer) {
+          clearTimeout(linkTouchRef.current.timer);
+          linkTouchRef.current.timer = null;
+        }
+      }, []);
+
+      const resetLinkTouchDrag = useCallback(() => {
+        clearLinkTouchTimer();
+        linkTouchRef.current.dragging = false;
+        linkTouchRef.current.startIndex = null;
+        linkTouchRef.current.overIndex = null;
+        setLinkTouchGhost(null);
+        setLinkDragState({ isDragging: false, startIndex: null, overIndex: null });
+      }, [clearLinkTouchTimer]);
+
+      const updateTouchLinkTarget = useCallback((clientX, clientY) => {
+        const hit = document.elementFromPoint(clientX, clientY);
+        const item = hit && hit.closest('[data-custom-link-index]');
+        const nextIndex = item ? Number(item.dataset.customLinkIndex) : null;
+        if (Number.isInteger(nextIndex) && nextIndex !== linkTouchRef.current.overIndex) {
+          linkTouchRef.current.overIndex = nextIndex;
+          setLinkDragState(prev => prev.isDragging ? { ...prev, overIndex: nextIndex } : prev);
+        }
+      }, []);
+
+      const handleDragStartLink = (e, index) => {
+        setLinkDragState({ isDragging: true, startIndex: index, overIndex: index });
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', String(index));
+        if (navigator.vibrate) navigator.vibrate(40);
+      };
+      const handleDragOverLink = (e, index) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        if (linkDragState.overIndex !== index) {
+          setLinkDragState(prev => ({ ...prev, overIndex: index }));
+        }
+      };
+      const handleDropLink = (e, targetIndex) => {
+        e.preventDefault();
+        reorderCustomLinks(linkDragState.startIndex, targetIndex);
+        setLinkDragState({ isDragging: false, startIndex: null, overIndex: null });
+      };
+      const handleDragEndLink = () => {
+        setLinkDragState({ isDragging: false, startIndex: null, overIndex: null });
+      };
+      const handleTouchStartLink = (e, index, title) => {
+        if (e.touches.length !== 1) return;
+        const touch = e.touches[0];
+        clearLinkTouchTimer();
+        linkTouchRef.current.startX = touch.clientX;
+        linkTouchRef.current.startY = touch.clientY;
+        linkTouchRef.current.startIndex = index;
+        linkTouchRef.current.overIndex = index;
+        linkTouchRef.current.dragging = false;
+        linkTouchRef.current.timer = setTimeout(() => {
+          linkTouchRef.current.timer = null;
+          linkTouchRef.current.dragging = true;
+          linkTouchRef.current.blockClickUntil = Date.now() + 450;
+          setLinkDragState({ isDragging: true, startIndex: index, overIndex: index });
+          setLinkTouchGhost({ x: touch.clientX, y: touch.clientY, name: title });
+          if (navigator.vibrate) navigator.vibrate(40);
+        }, LINK_LONG_PRESS_MS);
+      };
+      const handleTouchMoveLink = (e) => {
+        const touch = e.touches[0];
+        if (!touch) return;
+        if (linkTouchRef.current.dragging) {
+          e.preventDefault();
+          setLinkTouchGhost(prev => prev ? { ...prev, x: touch.clientX, y: touch.clientY } : null);
+          updateTouchLinkTarget(touch.clientX, touch.clientY);
+          return;
+        }
+        const dx = touch.clientX - linkTouchRef.current.startX;
+        const dy = touch.clientY - linkTouchRef.current.startY;
+        if (Math.abs(dx) > 10 || Math.abs(dy) > 10) clearLinkTouchTimer();
+      };
+      const handleTouchEndLink = (e, fallbackIndex) => {
+        clearLinkTouchTimer();
+        if (!linkTouchRef.current.dragging) return;
+        e.preventDefault();
+        const targetIndex = Number.isInteger(linkTouchRef.current.overIndex) ? linkTouchRef.current.overIndex : fallbackIndex;
+        reorderCustomLinks(linkTouchRef.current.startIndex, targetIndex);
+        resetLinkTouchDrag();
+      };
+      const handleTouchCancelLink = () => {
+        resetLinkTouchDrag();
+      };
+      const blockLinkClickIfNeeded = (e) => {
+        if (linkTouchRef.current.dragging || Date.now() < linkTouchRef.current.blockClickUntil) {
+          e.preventDefault();
+          e.stopPropagation();
+          return true;
+        }
+        return false;
+      };
+
+      const allFolderPaths = useMemo(() => {
+        const paths = new Set();
+        Object.keys(folderMeta || {}).forEach(path => {
+          if (path) paths.add(path);
+        });
+        for (const a of articles) {
+          const parts = (a.path || '').trim().split('/').filter(Boolean);
+          let acc = '';
+          for (const part of parts) {
+            acc = acc ? `${acc}/${part}` : part;
+            paths.add(acc);
+          }
+        }
+        return [...paths].sort((a, b) => a.localeCompare(b));
+      }, [articles, folderMeta]);
+
+      const toggleFolderVisibility = useCallback((folderPath) => {
+        setHiddenFolders(prev => {
+          const next = new Set(prev);
+          next.has(folderPath) ? next.delete(folderPath) : next.add(folderPath);
+          try { localStorage.setItem('sb_hiddenFolders', JSON.stringify([...next])); } catch { }
+          return next;
+        });
+      }, []);
+
+      // フォルダピッカー・リンクピッカー外クリックで閉じる
+      const pickerRef = useRef(null);
+      const linkPickerRef = useRef(null);
+      useEffect(() => {
+        const close = (e) => {
+          if (showFolderPicker && pickerRef.current && !pickerRef.current.contains(e.target)) setShowFolderPicker(false);
+          if (showLinkPicker && linkPickerRef.current && !linkPickerRef.current.contains(e.target)) setShowLinkPicker(false);
+        };
+        window.addEventListener('pointerdown', close);
+        return () => window.removeEventListener('pointerdown', close);
+      }, [showFolderPicker, showLinkPicker]);
+
+      const folderTreeProps = {
+        articles, selectedId, loading,
+        onDeleteArticle, onDuplicateArticle, onMoveArticle,
+        hiddenFolders, onHideFolder: toggleFolderVisibility,
+        selectMode, selectedIds, onToggleSelect, onEnterSelectMode,
+        multiSelectedIds, onMultiSelect, onRangeSelect,
+        articleH1Cache,
+        folderMeta, folderLoading, onLoadFolder,
+      };
+
+      // サイドバー下部フッター（＋ボタン + フォルダピッカー）
+      const SidebarFooter = () => (
+        <div className="border-t border-slate-100 px-2 py-1.5 flex flex-col gap-1 relative" style={{ flexShrink: 0 }}>
+          {/* アフィリンク */}
+          <button
+            onClick={() => setAffModalOpen(true)}
+            className="w-full flex items-center gap-1.5 text-xs text-slate-400 hover:text-purple-600 hover:bg-purple-50 rounded-md px-2 py-1.5 transition-colors"
+            title="アフィリエイトリンク管理"
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71" />
+              <path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71" />
+            </svg>
+            アフィリンク
+          </button>
+
+          {/* リンク集 */}
+          <button
+            onClick={() => setShowLinkPicker(v => !v)}
+            className="w-full flex items-center gap-1.5 text-xs text-slate-400 hover:text-purple-600 hover:bg-purple-50 rounded-md px-2 py-1.5 transition-colors"
+            title="リンク集"
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" /></svg>
+            リンク集
+          </button>
+
+          {/* リンク集パネル */}
+          {showLinkPicker && (
+            <div
+              ref={linkPickerRef}
+              onPointerDown={(e) => e.stopPropagation()}
+              style={mobileSidebarOpen
+                ? { position: 'fixed', left: '12px', right: '12px', bottom: '84px', zIndex: 99999, background: 'white', border: '1px solid #e2e8f0', borderRadius: '10px', boxShadow: '0 8px 32px rgba(0,0,0,0.22)', display: 'flex', flexDirection: 'column' }
+                : { position: 'absolute', bottom: '100%', left: '8px', right: '8px', zIndex: 9998, background: 'white', border: '1px solid #e2e8f0', borderRadius: '10px', boxShadow: '0 8px 32px rgba(0,0,0,0.15)', display: 'flex', flexDirection: 'column', marginBottom: '4px' }
+              }
+            >
+              <div style={{ padding: '10px 12px 8px', borderBottom: '1px solid #f1f5f9', fontSize: '12px', fontWeight: 700, color: '#7C4DFF', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span>カスタムリンク集</span>
+              </div>
+              <div style={{ background: '#f8fafc', padding: '8px 12px', borderRadius: '0 0 10px 10px', flexShrink: 0 }}>
+                <div style={{ fontSize: '11px', fontWeight: 600, color: '#64748b', marginBottom: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span>URLリスト</span>
+                  <button onClick={() => {
+                    const title = prompt('追加するリンクのタイトルを入力:');
+                    if (!title || !title.trim()) return;
+                    const url = prompt('URLを入力:');
+                    if (url && url.trim()) {
+                      persistCustomLinks([...customLinks, { id: 'link_' + Date.now(), title: title.trim(), url: url.trim() }]);
+                    }
+                  }} style={{ background: 'none', border: 'none', color: '#7C4DFF', cursor: 'pointer', fontSize: '11px', fontWeight: 700 }}>＋ 追加</button>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', maxHeight: '250px', overflowY: 'auto', paddingBottom: '4px' }}>
+                  {customLinks.map((link, idx) => (
+                    <div
+                      key={link.id}
+                      data-custom-link-index={idx}
+                      className="custom-link-item"
+                      draggable={false}
+                      onDragOver={(e) => handleDragOverLink(e, idx)}
+                      onDrop={(e) => handleDropLink(e, idx)}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: '6px', background: 'white', padding: '4px 6px',
+                        borderRadius: '6px', border: linkDragState.overIndex === idx && linkDragState.startIndex !== idx ? '1px dashed #7C4DFF' : '1px solid #e2e8f0',
+                        boxShadow: '0 1px 2px rgba(0,0,0,0.02)',
+                        opacity: linkDragState.startIndex === idx ? 0.4 : 1,
+                        transition: 'border 0.2s, opacity 0.2s',
+                        touchAction: 'manipulation'
+                      }}
+                    >
+                      <div
+                        draggable={true}
+                        onDragStart={(e) => handleDragStartLink(e, idx)}
+                        onDragEnd={handleDragEndLink}
+                        onTouchStart={(e) => handleTouchStartLink(e, idx, link.title)}
+                        onTouchMove={handleTouchMoveLink}
+                        onTouchEnd={(e) => handleTouchEndLink(e, idx)}
+                        onTouchCancel={handleTouchCancelLink}
+                        onContextMenu={(e) => e.preventDefault()}
+                        style={{ cursor: 'grab', display: 'flex', alignItems: 'center', padding: '2px 4px', color: '#cbd5e1', touchAction: 'none', userSelect: 'none', WebkitUserSelect: 'none', WebkitTouchCallout: 'none' }}
+                        title="ここを掴んでドラッグして並び替え"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M8 6h8M8 12h8M8 18h8" /></svg>
+                      </div>
+                      <a
+                        href={link.url}
+                        target={link.url.startsWith('/') ? '_self' : '_blank'}
+                        rel="noopener noreferrer"
+                        draggable={false}
+                        onDragStart={(e) => e.preventDefault()}
+                        onClick={(e) => {
+                          if (blockLinkClickIfNeeded(e)) return;
+                          if (link.url.startsWith('/')) {
+                            e.preventDefault();
+                            setShowLinkPicker(false);
+                            if (typeof onMobileClose === 'function') onMobileClose();
+                            window.location.assign(link.url);
+                          }
+                        }}
+                        className="flex items-center gap-2 text-[11px] text-slate-600 hover:text-[#7C4DFF] hover:bg-purple-50 rounded-md px-1.5 py-1 transition-all"
+                        style={{ textDecoration: 'none', flex: 1, minWidth: 0, userSelect: 'none' }}
+                        title={link.url}
+                      >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ flexShrink: 0, display: 'none' }}>
+                          <path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71" />
+                          <path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71" />
+                        </svg>
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 500 }}>{link.title}</span>
+                      </a>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', flexShrink: 0 }}>
+                        <button
+                          onClick={() => {
+                            if (Date.now() < linkTouchRef.current.blockClickUntil) return;
+                            moveCustomLinkByStep(idx, -1);
+                          }}
+                          disabled={idx === 0}
+                          title="上へ移動"
+                          style={{
+                            width: '20px', height: '18px', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            color: idx === 0 ? '#cbd5e1' : '#64748b',
+                            cursor: idx === 0 ? 'not-allowed' : 'pointer',
+                            background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '4px', flexShrink: 0
+                          }}
+                        >
+                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 15l-6-6-6 6" /></svg>
+                        </button>
+                        <button
+                          onClick={() => {
+                            if (Date.now() < linkTouchRef.current.blockClickUntil) return;
+                            moveCustomLinkByStep(idx, 1);
+                          }}
+                          disabled={idx === customLinks.length - 1}
+                          title="下へ移動"
+                          style={{
+                            width: '20px', height: '18px', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            color: idx === customLinks.length - 1 ? '#cbd5e1' : '#64748b',
+                            cursor: idx === customLinks.length - 1 ? 'not-allowed' : 'pointer',
+                            background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '4px', flexShrink: 0
+                          }}
+                        >
+                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M6 9l6 6 6-6" /></svg>
+                        </button>
+                      </div>
+                      <button onClick={() => {
+                        if (Date.now() < linkTouchRef.current.blockClickUntil) return;
+                        if (linkTouchRef.current.dragging) return;
+                        const newTitle = prompt('タイトルを編集:', link.title);
+                        if (newTitle === null) return;
+                        const newUrl = prompt('URLを編集:', link.url);
+                        if (newUrl === null) return;
+                        if (newTitle.trim() && newUrl.trim()) {
+                          persistCustomLinks((links) => {
+                            const newLinks = [...links];
+                            newLinks[idx] = { ...newLinks[idx], title: newTitle.trim(), url: newUrl.trim() };
+                            return newLinks;
+                          });
+                        }
+                      }} style={{ fontSize: '10px', color: '#64748b', cursor: 'pointer', background: '#f1f5f9', border: 'none', padding: '2px 6px', borderRadius: '4px', flexShrink: 0 }}>編集</button>
+                      <button onClick={() => {
+                        if (Date.now() < linkTouchRef.current.blockClickUntil) return;
+                        if (linkTouchRef.current.dragging) return;
+                        if (confirm('このリンクを削除しますか？')) {
+                          persistCustomLinks(customLinks.filter((_, i) => i !== idx));
+                        }
+                      }} style={{ fontSize: '10px', color: '#ef4444', cursor: 'pointer', background: '#fff1f2', border: 'none', padding: '2px 6px', borderRadius: '4px', flexShrink: 0 }}>削除</button>
+                    </div>
+                  ))}
+                </div>
+                {linkTouchGhost && (
+                  <div className="touch-drag-ghost" style={{ left: linkTouchGhost.x, top: linkTouchGhost.y }}>
+                    {linkTouchGhost.name}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* フォルダ管理 */}
+          <div className="flex items-center gap-1 w-full relative">
+            <button
+              onClick={() => setShowFolderPicker(v => !v)}
+              className="w-full flex items-center gap-1.5 text-xs text-slate-400 hover:text-purple-600 hover:bg-purple-50 rounded-md px-2 py-1.5 transition-colors"
+              title="表示フォルダを管理"
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 5v14M5 12h14" /></svg>
+              フォルダ管理
+            </button>
+            {hiddenFolders.size > 0 && (
+              <span className="absolute right-2 text-[10px] bg-orange-100 text-orange-500 rounded-full px-1.5 py-0.5 leading-none pointer-events-none">{hiddenFolders.size}非表示</span>
+            )}
+          </div>
+          {/* フォルダピッカーパネル */}
+          {showFolderPicker && (
+            <div
+              ref={pickerRef}
+              style={{ position: 'absolute', bottom: '100%', left: '8px', right: '8px', zIndex: 9998, background: 'white', border: '1px solid #e2e8f0', borderRadius: '10px', boxShadow: '0 8px 32px rgba(0,0,0,0.15)', maxHeight: '450px', display: 'flex', flexDirection: 'column' }}
+            >
+              <div style={{ padding: '10px 12px 8px', borderBottom: '1px solid #f1f5f9', fontSize: '12px', fontWeight: 700, color: '#7C4DFF', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
+                <span>表示フォルダの管理</span>
+                {hiddenFolders.size > 0 && (
+                  <button
+                    onClick={() => setHiddenFolders(prev => { localStorage.removeItem('sb_hiddenFolders'); return new Set(); })}
+                    style={{ fontSize: '11px', color: '#64748b', background: 'none', border: 'none', cursor: 'pointer', padding: '2px 6px', borderRadius: '4px' }}
+                  >すべて表示</button>
+                )}
+              </div>
+              <div style={{ overflowY: 'auto', flex: 1, padding: '4px 0' }}>
+                {allFolderPaths.length === 0 ? (
+                  <div style={{ padding: '12px', fontSize: '12px', color: '#94a3b8', textAlign: 'center' }}>フォルダが見つかりません</div>
+                ) : allFolderPaths.map(fp => {
+                  const isHidden = hiddenFolders.has(fp);
+                  const depth = fp.split('/').length - 1;
+                  const name = fp.split('/').pop();
+                  return (
+                    <button
+                      key={fp}
+                      onClick={() => toggleFolderVisibility(fp)}
+                      style={{ display: 'flex', alignItems: 'center', gap: '8px', width: '100%', padding: '7px 12px', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left', paddingLeft: `${12 + depth * 14}px` }}
+                      onMouseEnter={e => e.currentTarget.style.background = '#f8fafc'}
+                      onMouseLeave={e => e.currentTarget.style.background = 'none'}
+                    >
+                      <span style={{ width: '16px', height: '16px', borderRadius: '4px', border: `1.5px solid ${isHidden ? '#cbd5e1' : '#7C4DFF'}`, background: isHidden ? 'white' : '#7C4DFF', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                        {!isHidden && <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3"><path d="M20 6L9 17l-5-5" /></svg>}
+                      </span>
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill={isHidden ? 'none' : '#7C4DFF'} stroke={isHidden ? '#94a3b8' : '#7C4DFF'} strokeWidth="2" style={{ flexShrink: 0 }}>
+                        <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z" />
+                      </svg>
+                      <span style={{ fontSize: '12px', color: isHidden ? '#94a3b8' : '#334155', textDecoration: isHidden ? 'line-through' : 'none', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* 追加: 外部フォルダ(URL)管理セクション */}
+              <div style={{ borderTop: '1px solid #f1f5f9', background: '#f8fafc', padding: '8px 12px', borderRadius: '0 0 10px 10px', flexShrink: 0 }}>
+                <div style={{ fontSize: '11px', fontWeight: 600, color: '#64748b', marginBottom: '6px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span>URL指定で追加</span>
+                  <button onClick={() => {
+                    const url = prompt('フォルダのURL(共有リンク)を入力:');
+                    if (url && url.trim()) {
+                      const newUrls = [...(externalFolderUrls || []), url.trim()];
+                      if (setExternalFolderUrls) setExternalFolderUrls(newUrls);
+                      try { localStorage.setItem('sb_externalFolderUrls', JSON.stringify(newUrls)); } catch { }
+                      if (onRefreshArticles) onRefreshArticles(newUrls);
+                    }
+                  }} style={{ background: 'none', border: 'none', color: '#7C4DFF', cursor: 'pointer', fontSize: '11px', fontWeight: 700 }}>＋ 追加</button>
+                </div>
+                {externalFolderUrls && externalFolderUrls.length > 0 && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', maxHeight: '80px', overflowY: 'auto', paddingBottom: '4px' }}>
+                    {externalFolderUrls.map((extUrl, idx) => (
+                      <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'white', padding: '4px 6px', borderRadius: '6px', border: '1px solid #e2e8f0', boxShadow: '0 1px 2px rgba(0,0,0,0.02)' }}>
+                        <div style={{ flex: 1, fontSize: '10px', color: '#475569', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={extUrl}>{extUrl}</div>
+                        <button onClick={() => {
+                          const newUrl = prompt('URLを編集:', extUrl);
+                          if (newUrl && newUrl.trim()) {
+                            const newUrls = [...externalFolderUrls];
+                            newUrls[idx] = newUrl.trim();
+                            if (setExternalFolderUrls) setExternalFolderUrls(newUrls);
+                            try { localStorage.setItem('sb_externalFolderUrls', JSON.stringify(newUrls)); } catch { }
+                            if (onRefreshArticles) onRefreshArticles(newUrls);
+                          }
+                        }} style={{ fontSize: '10px', color: '#64748b', cursor: 'pointer', background: '#f1f5f9', border: 'none', padding: '2px 6px', borderRadius: '4px' }}>編集</button>
+                        <button onClick={() => {
+                          if (confirm('このURLを削除しますか？')) {
+                            const newUrls = externalFolderUrls.filter((_, i) => i !== idx);
+                            if (setExternalFolderUrls) setExternalFolderUrls(newUrls);
+                            try { localStorage.setItem('sb_externalFolderUrls', JSON.stringify(newUrls)); } catch { }
+                            if (onRefreshArticles) onRefreshArticles(newUrls);
+                          }
+                        }} style={{ fontSize: '10px', color: '#ef4444', cursor: 'pointer', background: '#fff1f2', border: 'none', padding: '2px 6px', borderRadius: '4px' }}>削除</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      );
+
+      return (
+        <>
+          {/* ── モバイル: オーバーレイ + ドロワー ── */}
+          {mobileSidebarOpen && (
+            <div className="lg:hidden mobile-overlay" onClick={onMobileClose} />
+          )}
+          <div className={`lg:hidden mobile-drawer ${mobileSidebarOpen ? 'open' : ''}`}>
+            <div className="p-3 border-b border-slate-100 bg-gradient-to-r from-[#7C4DFF] to-[#651FFF] flex items-center gap-2">
+              <button
+                onClick={() => { onNewArticle(); onMobileClose(); }}
+                className="flex-1 flex items-center justify-center gap-2 bg-white/20 hover:bg-white/30 text-white font-bold rounded-lg px-4 py-2.5 transition-colors text-sm"
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 5v14M5 12h14" /></svg>
+                新規作成
+              </button>
+              <button onClick={onMobileClose} className="text-white/70 hover:text-white p-1.5 rounded-lg hover:bg-white/20 transition-colors flex-shrink-0" title="閉じる">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6L6 18M6 6l12 12" /></svg>
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto py-2">
+              <FolderTree {...folderTreeProps} onSelect={(a) => { onSelect(a); onMobileClose(); }} />
+            </div>
+            <SidebarFooter />
+          </div>
+
+          {/* ── デスクトップ: インラインサイドバー ── */}
+          <div className="hidden lg:flex h-screen" style={{ position: 'relative' }}>
+            <aside
+              style={{ width: isCollapsed ? 0 : sidebarWidth, transition: isCollapsed ? 'width 0.25s' : 'none', overflow: 'hidden' }}
+              className="h-screen bg-white border-r border-slate-200 flex flex-col flex-shrink-0"
+            >
+              <div className="p-3 border-b border-slate-100 bg-gradient-to-r from-[#7C4DFF] to-[#651FFF]">
+                <button
+                  onClick={onNewArticle}
+                  className="w-full flex items-center justify-center gap-2 bg-white/20 hover:bg-white/30 text-white font-bold rounded-lg px-4 py-2.5 transition-colors text-sm"
+                  id="new-article-btn"
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 5v14M5 12h14" /></svg>
+                  新規作成
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto py-2">
+                <FolderTree {...folderTreeProps} onSelect={onSelect} />
+              </div>
+              <SidebarFooter />
+            </aside>
+            {!isCollapsed && (
+              <div className="sidebar-resize-handle h-full" onMouseDown={onResizeStart} />
+            )}
+            <button
+              className="sidebar-toggle"
+              onClick={onToggle}
+              title={isCollapsed ? 'サイドバーを開く' : 'サイドバーを閉じる'}
+            >
+              <svg
+                width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
+                style={{ transform: isCollapsed ? 'rotate(0deg)' : 'rotate(180deg)', transition: 'transform 0.2s' }}
+              >
+                <path d="M15 18l-6-6 6-6" />
+              </svg>
+            </button>
+          </div>
+        </>
+      );
+    }
+
+    // === アフィリエイトリンクモーダル（動的MEMO・更新ボタン・紫配色） ===
+    function AffiliateLinkModal({ isOpen, onClose, showToast }) {
+      const [memos, setMemos] = useState({});
+      const [memoKeys, setMemoKeys] = useState(['memo1']);
+      const [act, setAct] = useState('memo1');
+      const [ld, setLd] = useState(false);
+      const [sv, setSv] = useState(false);
+      const [cp, setCp] = useState(false);
+      // モーダルサイズ（リサイズ対応）
+      const [modalW, setModalW] = useState(680);
+      const [modalH, setModalH] = useState(600);
+      const resizing = useRef(false);
+      const resizeStart = useRef({ x: 0, y: 0, w: 0, h: 0 });
+      // アフィリエイト自動保存（ユーザー編集時のみ）
+      const affAutoSaveTimer = useRef(null);
+      const affUserEdited = useRef(false); // ユーザーが実際に編集したかを追跡
+
+      const doLoad = useCallback(() => {
+        setLd(true);
+        affUserEdited.current = false; // ロード中はユーザー編集フラグをリセット
+        fetchAffiliateMemos()
+          .then(d => {
+            setMemos(d);
+            const keys = Object.keys(d).sort((a, b) =>
+              parseInt(a.replace('memo', ''), 10) - parseInt(b.replace('memo', ''), 10)
+            );
+            setMemoKeys(keys.length > 0 ? keys : ['memo1']);
+            setAct(prev => keys.includes(prev) ? prev : (keys[0] || 'memo1'));
+          })
+          .catch(e => showToast('アフィリンク取得失敗: ' + e.message, 'error'))
+          .finally(() => setLd(false));
+      }, [showToast]);
+
+      useEffect(() => { if (isOpen) doLoad(); }, [isOpen]);
+
+      // モーダルリサイズ用マウスイベント
+      useEffect(() => {
+        const onMove = (e) => {
+          if (!resizing.current) return;
+          const dx = e.clientX - resizeStart.current.x;
+          const dy = e.clientY - resizeStart.current.y;
+          setModalW(Math.max(400, Math.min(window.innerWidth * 0.95, resizeStart.current.w + dx)));
+          setModalH(Math.max(300, Math.min(window.innerHeight * 0.95, resizeStart.current.h + dy)));
+        };
+        const onUp = () => {
+          resizing.current = false;
+          document.body.style.cursor = '';
+          document.body.style.userSelect = '';
+        };
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+        return () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
+      }, []);
+
+      // memos変更時の自動保存（ユーザー編集時のみ・2秒デバウンス）
+      // affUserEdited.current=true のときのみ保存（初回ロード時の上書きを防止）
+      useEffect(() => {
+        if (!affUserEdited.current) return;
+        clearTimeout(affAutoSaveTimer.current);
+        affAutoSaveTimer.current = setTimeout(() => {
+          saveAffiliateMemos(memos).catch(() => { });
+        }, 2000);
+        return () => clearTimeout(affAutoSaveTimer.current);
+      }, [memos]);
+
+      const doSave = async () => {
+        setSv(true);
+        try { await saveAffiliateMemos(memos); showToast('💾 アフィリンクをOneDriveに保存しました！', 'success'); }
+        catch (e) { showToast('保存失敗: ' + e.message, 'error'); }
+        finally { setSv(false); }
+      };
+
+      const doCopy = async () => {
+        try { await navigator.clipboard.writeText(memos[act] || ''); setCp(true); setTimeout(() => setCp(false), 2000); }
+        catch { showToast('コピーに失敗しました', 'error'); }
+      };
+
+      if (!isOpen) return null;
+
+      return (
+        <div className="aff-overlay" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+          <div className="aff-modal" style={{ width: modalW + 'px', height: modalH + 'px' }}>
+            {/* ヘッダー */}
+            <div style={{ padding: '0.75rem 1.25rem', borderBottom: '1px solid #e2e8f0', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'linear-gradient(135deg,#f5f3ff,#ede9fe)', flexShrink: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <span style={{ fontSize: '1.1rem' }}>🔗</span>
+                <h3 style={{ fontWeight: 700, color: '#1e293b', fontSize: '0.95rem', margin: 0 }}>アフィリエイトリンク管理</h3>
+                <span style={{ fontSize: '0.65rem', color: '#7C4DFF', background: '#ede9fe', padding: '0.15rem 0.5rem', borderRadius: '9999px' }}>OneDrive同期</span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
+                {/* 更新ボタン */}
+                <button
+                  onClick={doLoad} disabled={ld}
+                  style={{ padding: '0.375rem', borderRadius: '0.5rem', border: '1px solid #ddd6fe', background: 'white', cursor: ld ? 'not-allowed' : 'pointer', color: '#7C4DFF', lineHeight: 0, transition: 'all 0.15s' }}
+                  title="OneDriveから最新を読み込む"
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ animation: ld ? 'spin 0.8s linear infinite' : 'none' }}>
+                    <path d="M1 4v6h6M23 20v-6h-6" /><path d="M20.49 9A9 9 0 005.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 013.51 15" />
+                  </svg>
+                </button>
+                <button onClick={onClose} style={{ padding: '0.375rem', borderRadius: '0.5rem', border: 'none', background: 'transparent', cursor: 'pointer', color: '#94a3b8', lineHeight: 0 }} title="閉じる">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6L6 18M6 6l12 12" /></svg>
+                </button>
+              </div>
+            </div>
+            {/* タブ（数字のみ・動的） */}
+            <div style={{ display: 'flex', borderBottom: '1px solid #e2e8f0', paddingLeft: '1rem', flexShrink: 0, overflowX: 'auto' }}>
+              {memoKeys.map(k => {
+                const num = k.replace('memo', '');
+                return (
+                  <button key={k} onClick={() => setAct(k)} className={`aff-tab ${act === k ? 'active' : ''}`}>
+                    {num}
+                    {memos[k] && memos[k].trim() && <span style={{ marginLeft: '0.3rem', width: '5px', height: '5px', borderRadius: '50%', background: '#7C4DFF', display: 'inline-block', verticalAlign: 'middle' }} />}
+                  </button>
+                );
+              })}
+            </div>
+            {/* 本文 */}
+            {ld ? (
+              <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <div style={{ textAlign: 'center' }}>
+                  <div className="skeleton" style={{ width: '2.5rem', height: '2.5rem', borderRadius: '50%', margin: '0 auto 0.75rem' }} />
+                  <p style={{ color: '#94a3b8', fontSize: '0.875rem' }}>OneDriveから読み込み中...</p>
+                </div>
+              </div>
+            ) : (
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '0.75rem 1rem', overflow: 'hidden' }}>
+                <textarea className="aff-ta" value={memos[act] || ''} onChange={e => { affUserEdited.current = true; setMemos(p => ({ ...p, [act]: e.target.value })); }} placeholder="アフィリエイトリンクを入力..." spellCheck={false} id={`aff-textarea-${act}`} />
+              </div>
+            )}
+            {/* フッター */}
+            <div style={{ padding: '0.75rem 1rem', borderTop: '1px solid #e2e8f0', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: '#f8fafc', flexShrink: 0 }}>
+              <button onClick={doCopy} style={{ display: 'flex', alignItems: 'center', gap: '0.375rem', padding: '0.5rem 0.75rem', borderRadius: '0.5rem', border: '1px solid #e2e8f0', background: 'white', color: cp ? '#10B981' : '#64748b', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600 }} title="全文コピー">
+                {cp ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M20 6L9 17l-5-5" /></svg> : <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" /></svg>}
+                {cp ? 'コピー済み' : '全文コピー'}
+              </button>
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <button onClick={onClose} style={{ padding: '0.5rem 1rem', borderRadius: '0.5rem', border: '1px solid #e2e8f0', background: 'white', color: '#64748b', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600 }}>閉じる</button>
+                <button onClick={doSave} disabled={sv} style={{ display: 'flex', alignItems: 'center', gap: '0.375rem', padding: '0.5rem 1.25rem', borderRadius: '0.5rem', border: 'none', background: sv ? '#cbd5e1' : 'linear-gradient(135deg,#7C4DFF,#651FFF)', color: 'white', cursor: sv ? 'not-allowed' : 'pointer', fontSize: '0.8rem', fontWeight: 700, boxShadow: sv ? 'none' : '0 2px 8px rgba(124,77,255,0.3)' }}>
+                  {sv ? (<><svg className="animate-spin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a9 9 0 11-6.219-8.56" /></svg>保存中...</>) : (<><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z" /><path d="M17 21v-8H7v8M7 3v5h8" /></svg>保存</>)}
+                </button>
+              </div>
+            </div>
+            {/* リサイズハンドル（右下角） */}
+            <div
+              className="aff-resize-handle"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                resizing.current = true;
+                resizeStart.current = { x: e.clientX, y: e.clientY, w: modalW, h: modalH };
+                document.body.style.cursor = 'se-resize';
+                document.body.style.userSelect = 'none';
+              }}
+            >
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor">
+                <path d="M11 8v3H8M11 4v7H4" />
+              </svg>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ── OGP ヘルパー（Appコンポーネント外・純粋関数） ──────────────
+    function _esc(s) {
+      return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+    }
+    function buildOgpCard(href, title, description, image, domain) {
+      const card = document.createElement('a');
+      card.href = href; card.target = '_blank'; card.rel = 'noopener noreferrer';
+      card.className = 'ogp-card';
+      card.innerHTML = [
+        `<div class="ogp-card-body">`,
+        domain ? `<div class="ogp-card-domain">${_esc(domain)}</div>` : '',
+        title ? `<div class="ogp-card-title">${_esc(title)}</div>` : '',
+        description ? `<div class="ogp-card-desc">${_esc(description)}</div>` : '',
+        `</div>`,
+        image ? `<img class="ogp-card-image" src="${_esc(image)}" alt="" loading="lazy" onerror="this.style.display='none'" />` : '',
+      ].join('');
+      return card;
+    }
+    function insertOgpCard(a, card) {
+      if (!a || !a.isConnected) return;
+      const p = a.parentElement;
+      if (!p || p.tagName !== 'P') { a.replaceWith(card); return; }
+      const pText = (p.textContent || '').trim();
+      const aText = (a.textContent || '').trim();
+      if (pText === aText) {
+        if (p.dataset.line) card.dataset.line = p.dataset.line;
+        p.replaceWith(card);
+      } else {
+        const prev = a.previousSibling;
+        if (prev && prev.nodeName === 'BR') prev.remove();
+        a.remove();
+        if ((p.textContent || '').trim() === '') {
+          if (p.dataset.line) card.dataset.line = p.dataset.line;
+          p.replaceWith(card);
+        }
+        else p.after(card);
+      }
+    }
+    function isOgpUrl(a) {
+      const href = a.getAttribute('href') || '';
+      if (!href.startsWith('http')) return false;
+      const text = (a.textContent || '').trim();
+      return text === href || text === href.replace(/^https?:\/\//, '');
+    }
+
+    function mergeArticlesById(current, incoming) {
+      const map = new Map((current || []).map(article => [article.id, article]));
+      (incoming || []).forEach(article => map.set(article.id, { ...(map.get(article.id) || {}), ...article }));
+      return [...map.values()].sort((a, b) => new Date(b.lastModified) - new Date(a.lastModified));
+    }
+
+    function foldersToMeta(folders, previous = {}) {
+      const next = { ...previous };
+      (folders || []).forEach(folder => {
+        if (!folder || !folder.path) return;
+        next[folder.path] = { ...(next[folder.path] || {}), ...folder };
+      });
+      return next;
+    }
+
+    // === メインアプリ ===
+    function App() {
+      const [articles, setArticles] = useState([]);
+      const [folderMeta, setFolderMeta] = useState({});
+      const [folderLoading, setFolderLoading] = useState({});
+      const [selectedArticle, setSelectedArticle] = useState(null);
+      const [content, setContent] = useState('');
+      const [originalContent, setOriginalContent] = useState('');
+      const [loading, setLoading] = useState(true);
+      const [contentLoading, setContentLoading] = useState(false);
+      const [saving, setSaving] = useState(false);
+      const [mobileTab, setMobileTab] = useState('editor');
+      const [toast, setToast] = useState(null);
+      const [isNewArticle, setIsNewArticle] = useState(false);
+      const [newFilename, setNewFilename] = useState('');
+      const [isEditingTitle, setIsEditingTitle] = useState(false);
+      const [editedTitle, setEditedTitle] = useState('');
+      const [pipelineRunning, setPipelineRunning] = useState(false);
+      const [noteDraftRunning, setNoteDraftRunning] = useState(false);
+      // note下書きURL（localStorageで永続化: ページリロード後も保持）
+      const [noteDraftUrls, setNoteDraftUrls] = useState(() => {
+        try { return JSON.parse(localStorage.getItem('sb_noteDraftUrls') || '{}'); }
+        catch { return {}; }
+      });
+      const [selectMode, setSelectMode] = useState(false);
+      const [selectedIds, setSelectedIds] = useState(new Set());
+      // Ctrl/Shift クリックによる複数選択（フォルダ移動専用）
+      const [multiSelectedIds, setMultiSelectedIds] = useState(new Set());
+      const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+      const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+      const [isDesktop, setIsDesktop] = useState(window.innerWidth >= 1024);
+      const [copied, setCopied] = useState(false);
+      const [affModalOpen, setAffModalOpen] = useState(false);
+      const [externalFolderUrls, setExternalFolderUrls] = useState(() => {
+        try { return JSON.parse(localStorage.getItem('sb_externalFolderUrls') || '[]'); }
+        catch { return []; }
+      });
+
+      // 検索と置換
+      const [showFindReplace, setShowFindReplace] = useState(false);
+      const [findText, setFindText] = useState('');
+      const [replaceText, setReplaceText] = useState('');
+      const [matchIndex, setMatchIndex] = useState(0);
+
+      const textareaRef = useRef(null);
+      const previewRef = useRef(null);
+      const titleInputRef = useRef(null);
+      const findInputRef = useRef(null);
+      const replaceInputRef = useRef(null);
+      // Undo 履歴管理
+      const undoStack = useRef([]);
+      const lastSavedText = useRef('');
+      const undoDebounce = useRef(null);
+      // スクロール同期（相互ロックで無限ループ防止）
+      const editorScrolling = useRef(false);
+      const previewScrolling = useRef(false);
+      // 自動保存
+      const autoSaveTimer = useRef(null);
+      const [autoSaveStatus, setAutoSaveStatus] = useState('idle'); // 'idle'|'pending'|'saved'
+      // OGP再読み込みトリガー
+      const [ogpTrigger, setOgpTrigger] = useState(0);
+      // OGPキャッシュ（URL → {title,description,image,domain}）
+      // エディタ編集でDOMがリセットされてもカードを即時復元するために使用
+      const ogpCacheRef = useRef({});
+      // トークン→ソース行マッピング（スクロール同期用）
+      const tokenLineMapRef = useRef([]);
+
+      const hasChanges = content !== originalContent;
+      const selectedArticleRef = useRef(null);
+      useEffect(() => { selectedArticleRef.current = selectedArticle; }, [selectedArticle]);
+
+      // 記事H1キャッシュ（localStorageで永続化: サイドバータイトル表示に使用）
+      const [articleH1Cache, setArticleH1Cache] = useState(() => {
+        try { return JSON.parse(localStorage.getItem('sb_articleH1Cache') || '{}'); }
+        catch { return {}; }
+      });
+
+      // YouTube元動画URL（GitHub Variables → localStorage キャッシュ）
+      const [youtubeSrcUrls, setYoutubeSrcUrls] = useState(() => {
+        try { return JSON.parse(localStorage.getItem('sb_youtubeSrcUrls') || '{}'); }
+        catch { return {}; }
+      });
+      const youtubeUrl = selectedArticle ? (youtubeSrcUrls[selectedArticle.name] || null) : null;
+      // YouTube URL 手動入力 state（既存記事のリンク設定用）
+      const [ytInputOpen, setYtInputOpen] = useState(false);
+      const [ytInputVal, setYtInputVal] = useState('');
+      const saveYtUrl = () => {
+        const trimmed = ytInputVal.trim();
+        if (!trimmed || !selectedArticle) return;
+        setYoutubeSrcUrls(prev => {
+          const next = { ...prev, [selectedArticle.name]: trimmed };
+          try { localStorage.setItem('sb_youtubeSrcUrls', JSON.stringify(next)); } catch { }
+          return next;
+        });
+        setYtInputOpen(false);
+        setYtInputVal('');
+      };
+
+      // 検索マッチ一覧
+      const findMatches = useMemo(() => {
+        if (!findText || !showFindReplace) return [];
+        const matches = [];
+        let idx = 0;
+        while (idx < content.length) {
+          const pos = content.indexOf(findText, idx);
+          if (pos === -1) break;
+          matches.push(pos);
+          idx = pos + findText.length;
+        }
+        return matches;
+      }, [content, findText, showFindReplace]);
+
+      const safeMatchIndex = findMatches.length > 0 ? Math.min(matchIndex, findMatches.length - 1) : 0;
+
+      // サイドバー幅リサイズ
+      const [sidebarWidth, setSidebarWidth] = useState(260);
+      const sidebarDragging = useRef(false);
+      const sidebarStartX = useRef(0);
+      const sidebarStartW = useRef(0);
+
+      const onSidebarResizeStart = useCallback((e) => {
+        sidebarDragging.current = true;
+        sidebarStartX.current = e.clientX;
+        sidebarStartW.current = sidebarWidth;
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+      }, [sidebarWidth]);
+
+      // エディタ/プレビュー分割リサイズ
+      const [editorRatio, setEditorRatio] = useState(0.5); // 0~1
+      const editorDragging = useRef(false);
+      const editorStartX = useRef(0);
+      const editorStartRatio = useRef(0.5);
+      const editorAreaRef = useRef(null);
+
+      const onEditorResizeStart = useCallback((e) => {
+        editorDragging.current = true;
+        editorStartX.current = e.clientX;
+        editorStartRatio.current = editorRatio;
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+      }, [editorRatio]);
+
+      useEffect(() => {
+        const onMove = (e) => {
+          if (sidebarDragging.current) {
+            const delta = e.clientX - sidebarStartX.current;
+            setSidebarWidth(Math.min(480, Math.max(180, sidebarStartW.current + delta)));
+          }
+          if (editorDragging.current && editorAreaRef.current) {
+            const rect = editorAreaRef.current.getBoundingClientRect();
+            const ratio = (e.clientX - rect.left) / rect.width;
+            setEditorRatio(Math.min(0.85, Math.max(0.15, ratio)));
+          }
+        };
+        const onUp = () => {
+          if (sidebarDragging.current || editorDragging.current) {
+            sidebarDragging.current = false;
+            editorDragging.current = false;
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
+          }
+        };
+        window.addEventListener('mousemove', onMove);
+        window.addEventListener('mouseup', onUp);
+        return () => {
+          window.removeEventListener('mousemove', onMove);
+          window.removeEventListener('mouseup', onUp);
+        };
+      }, []);
+
+      // 記事一覧取得
+      const loadArticles = useCallback(async (exUrls = null) => {
+        setLoading(true);
+        try {
+          const targetUrls = exUrls !== null ? exUrls : externalFolderUrls;
+          const data = await fetchArticles(targetUrls, { raw: true, mode: 'shallow', h1Limit: 3 });
+          const initialArticles = data.articles || [];
+          const selected = selectedArticleRef.current;
+          setArticles(selected && !initialArticles.some(article => article.id === selected.id)
+            ? mergeArticlesById(initialArticles, [selected])
+            : initialArticles);
+          setFolderMeta(foldersToMeta(data.folders || [], {}));
+          setFolderLoading({});
+        } catch (e) {
+          showToast('記事一覧の取得に失敗しました', 'error');
+        } finally {
+          setLoading(false);
+        }
+      }, [externalFolderUrls]);
+
+      const loadFolder = useCallback(async (folderPath, meta = {}) => {
+        const normalizedPath = (folderPath || '').trim().replace(/^\/+|\/+$/g, '');
+        if (!normalizedPath) return;
+        setFolderLoading(prev => ({ ...prev, [normalizedPath]: true }));
+        try {
+          const data = await fetchArticles([], {
+            raw: true,
+            mode: 'shallow',
+            folderPath: normalizedPath,
+            folderId: meta.id || '',
+            h1Limit: 3,
+          });
+          setArticles(prev => mergeArticlesById(prev, data.articles || []));
+          setFolderMeta(prev => {
+            const next = foldersToMeta(data.folders || [], prev);
+            next[normalizedPath] = { ...(next[normalizedPath] || {}), ...meta, path: normalizedPath, loaded: true };
+            return next;
+          });
+        } catch (e) {
+          showToast('フォルダの読み込みに失敗しました', 'error');
+        } finally {
+          setFolderLoading(prev => {
+            const next = { ...prev };
+            delete next[normalizedPath];
+            return next;
+          });
+        }
+      }, []);
+
+      useEffect(() => { loadArticles(); }, [loadArticles]);
+
+      // デスクトップ判定（リサイズ対応）
+      useEffect(() => {
+        const handler = () => setIsDesktop(window.innerWidth >= 1024);
+        window.addEventListener('resize', handler);
+        return () => window.removeEventListener('resize', handler);
+      }, []);
+
+      const showToast = (message, type = 'info') => setToast({ message, type });
+
+      // 記事削除
+      const handleDeleteArticle = useCallback(async (article) => {
+        try {
+          await deleteArticleApi(article.id);
+          setArticles(prev => prev.filter(a => a.id !== article.id));
+          if (selectedArticle?.id === article.id) {
+            setSelectedArticle(null);
+            setContent('');
+            setOriginalContent('');
+            setIsNewArticle(false);
+          }
+          showToast('記事を削除しました', 'success');
+        } catch (e) {
+          showToast(e.message, 'error');
+        }
+      }, [selectedArticle]);
+
+      // 記事複製
+      const handleDuplicateArticle = useCallback(async (article) => {
+        try {
+          const copyName = `コピー_${article.name}`;
+          const result = await duplicateArticleApi(article.id, copyName, article.path || '');
+          const newArticle = {
+            id: result.id,
+            name: result.name,
+            path: article.path || '',
+            lastModified: result.lastModified,
+            webUrl: result.webUrl,
+            size: result.size,
+          };
+          setArticles(prev => [newArticle, ...prev]);
+          showToast('記事を複製しました', 'success');
+        } catch (e) {
+          showToast(e.message, 'error');
+        }
+      }, []);
+
+      // Ctrl/Cmd クリック: 個別トグル
+      const handleMultiSelect = useCallback((id) => {
+        if (id === null) { setMultiSelectedIds(new Set()); return; }
+        setMultiSelectedIds(prev => {
+          const next = new Set(prev);
+          next.has(id) ? next.delete(id) : next.add(id);
+          return next;
+        });
+      }, []);
+
+      // Shift クリック: 最後クリックから今クリックまでの範囲を選択
+      const handleRangeSelect = useCallback((fromId, toId) => {
+        const ids = articles.map(a => a.id);
+        const fi = ids.indexOf(fromId);
+        const ti = ids.indexOf(toId);
+        if (fi === -1 || ti === -1) return;
+        const [lo, hi] = fi < ti ? [fi, ti] : [ti, fi];
+        const rangeIds = new Set(ids.slice(lo, hi + 1));
+        setMultiSelectedIds(rangeIds);
+      }, [articles]);
+
+      // 記事移動（ドラッグ&ドロップ・単一 or 複数対応）
+      const handleMoveArticle = useCallback(async (articleOrArray, destFolderPath) => {
+        const targets = Array.isArray(articleOrArray) ? articleOrArray : [articleOrArray];
+        let successCount = 0;
+        for (const article of targets) {
+          try {
+            await moveArticleApi(article.id, destFolderPath);
+            setArticles(prev => prev.map(a =>
+              a.id === article.id ? { ...a, path: destFolderPath } : a
+            ));
+            successCount++;
+          } catch (e) {
+            showToast(`「${article.name.replace(/^\d{8}_\d{4}_/, '').replace('.md', '')}」の移動失敗: ${e.message}`, 'error');
+          }
+        }
+        if (successCount > 0) {
+          const label = successCount === 1
+            ? `「${targets[0].name.replace(/^\d{8}_\d{4}_/, '').replace('.md', '')}」を移動しました`
+            : `${successCount}件の記事を移動しました`;
+          showToast(label, 'success');
+        }
+        setMultiSelectedIds(new Set()); // 移動後は選択解除
+      }, []);
+
+      // 記事選択
+      const handleSelect = async (article) => {
+        if (hasChanges && !confirm('未保存の変更があります。破棄しますか？')) return;
+        setContentLoading(true);
+        setIsNewArticle(false);
+        setIsEditingTitle(false);
+        try {
+          const text = await fetchArticleContent(article.id);
+          setContent(text);
+          setOriginalContent(text);
+          setSelectedArticle(article);
+          // H1をタイトルとして使用（なければファイル名から抽出）
+          const h1Match = text.match(/^#\s+(.+)$/m);
+          const h1Title = h1Match ? h1Match[1].trim() : article.name.replace(/^\d{8}_\d{4}_/, '').replace('.md', '');
+          setEditedTitle(h1Title);
+          // H1をキャッシュ（サイドバー表示用・localStorage永続化）
+          if (h1Match) {
+            setArticleH1Cache(prev => {
+              const next = { ...prev, [article.id]: h1Title };
+              try { localStorage.setItem('sb_articleH1Cache', JSON.stringify(next)); } catch { }
+              return next;
+            });
+          }
+          // YouTube元動画URLをバックグラウンドで取得（GitHub Variables → localStorage）
+          fetch(`/api/youtube-source?name=${encodeURIComponent(article.name)}`)
+            .then(r => r.ok ? r.json() : null)
+            .then(data => {
+              if (!data?.url) return;
+              setYoutubeSrcUrls(prev => {
+                const next = { ...prev, [article.name]: data.url };
+                try { localStorage.setItem('sb_youtubeSrcUrls', JSON.stringify(next)); } catch { }
+                return next;
+              });
+            })
+            .catch(() => { }); // エラーは無視してスタックさせない
+          // note下書きURLをバックグラウンドで最新取得（エラーは無視してスタックさせない）
+          fetchNoteDraftUrl(article.id).then(url => {
+            if (!url) return;
+            setNoteDraftUrls(prev => {
+              const next = { ...prev, [article.id]: url };
+              try { localStorage.setItem('sb_noteDraftUrls', JSON.stringify(next)); } catch { }
+              return next;
+            });
+          }).catch(() => { });
+        } catch (e) {
+          showToast('記事の読み込みに失敗しました', 'error');
+        } finally {
+          setContentLoading(false);
+        }
+      };
+
+      // 新規記事
+      const handleNewArticle = () => {
+        if (hasChanges && !confirm('未保存の変更があります。破棄しますか？')) return;
+        setIsNewArticle(true);
+        setSelectedArticle(null);
+        setContent('# 新しい記事\n\nここに記事を書いてください...\n');
+        setOriginalContent('');
+        setIsEditingTitle(false);
+        const now = new Date();
+        const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+        const timeStr = `${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
+        setNewFilename(`${dateStr}_${timeStr}_新しい記事.md`);
+      };
+
+      // 保存（既存記事はfileIDで上書き、新規はルートフォルダに作成）
+      // silent=true のとき Toast非表示（自動保存用）
+      // H1キャッシュをcontentから抽出して更新するヘルパー
+      const updateH1CacheFromContent = useCallback((articleId, text) => {
+        if (!articleId) return;
+        const h1Match = text.match(/^#\s+(.+)$/m);
+        if (!h1Match) return;
+        const h1Title = h1Match[1].trim();
+        setArticleH1Cache(prev => {
+          if (prev[articleId] === h1Title) return prev; // 変化なしなら更新しない
+          const next = { ...prev, [articleId]: h1Title };
+          try { localStorage.setItem('sb_articleH1Cache', JSON.stringify(next)); } catch { }
+          return next;
+        });
+      }, []);
+
+      const handleSave = async (silent = false) => {
+        const filename = isNewArticle ? newFilename : (selectedArticle?.name || '');
+        if (!filename) { if (!silent) showToast('ファイル名を指定してください', 'error'); return; }
+        if (!silent) setSaving(true);
+        try {
+          // 既存ファイルはIDで直接上書きして、フォルダ位置を維持する
+          const fileId = isNewArticle ? null : (selectedArticle?.id || null);
+          const result = await saveArticle(filename, content, fileId);
+          setOriginalContent(content);
+          if (!silent) showToast('💾 OneDriveに保存しました！', 'success');
+          if (isNewArticle && result.id) {
+            const newArticle = {
+              id: result.id,
+              name: result.name || filename,
+              path: '',
+              lastModified: result.lastModified || new Date().toISOString(),
+              webUrl: result.webUrl || '',
+              size: result.size || content.length,
+            };
+            setSelectedArticle(newArticle);
+            setArticles(prev => [newArticle, ...prev]);
+            // 新規記事保存後にH1キャッシュを更新
+            updateH1CacheFromContent(result.id, content);
+          } else {
+            // 既存記事保存後にH1キャッシュを更新
+            updateH1CacheFromContent(selectedArticle?.id, content);
+          }
+          setIsNewArticle(false);
+          setTimeout(async () => {
+            try { await loadArticles(); }
+            catch (e) { console.warn('一覧再取得失敗（保存は成功）:', e); }
+          }, 1500);
+        } catch (e) {
+          if (!silent) showToast('保存に失敗しました: ' + e.message, 'error');
+        } finally {
+          if (!silent) setSaving(false);
+        }
+      };
+
+      // 自動保存（既存記事のみ・2秒デバウンス）
+      useEffect(() => {
+        if (!selectedArticle || isNewArticle) return;
+        if (content === originalContent) return;
+        setAutoSaveStatus('pending');
+        clearTimeout(autoSaveTimer.current);
+        autoSaveTimer.current = setTimeout(async () => {
+          try {
+            await saveArticle(selectedArticle.name, content, selectedArticle.id);
+            setOriginalContent(content);
+            setAutoSaveStatus('saved');
+            // 自動保存時もH1キャッシュを更新
+            updateH1CacheFromContent(selectedArticle.id, content);
+            setTimeout(() => setAutoSaveStatus('idle'), 2000);
+          } catch { setAutoSaveStatus('idle'); }
+        }, 2000);
+        return () => clearTimeout(autoSaveTimer.current);
+      }, [content]);
+
+      // ── スクロール同期ヘルパー ──────────────────────────
+      // 見出しアンカーベースで同期（OGPカードで縦幅が変わっても正確に対応）
+      // スクロール同期（エディタ → プレビュー）data-lineベース精密同期
+      const handleEditorScroll = useCallback(() => {
+        if (previewScrolling.current) return;
+        const ta = textareaRef.current;
+        const pv = previewRef.current;
+        if (!ta || !pv) return;
+        editorScrolling.current = true;
+        try {
+          const lines = ta.value.split('\n');
+          const lineH = ta.scrollHeight / Math.max(1, lines.length);
+          const topLine = Math.max(0, Math.floor(ta.scrollTop / lineH));
+          // data-line属性付きのブロック要素から対応位置を計算
+          const annotated = [...pv.querySelectorAll('[data-line]')];
+          if (annotated.length >= 2) {
+            let prev = annotated[0], next = null;
+            for (const el of annotated) {
+              const elLine = parseInt(el.dataset.line, 10);
+              if (elLine <= topLine) prev = el;
+              else if (!next) next = el;
+            }
+            if (next) {
+              const prevLine = parseInt(prev.dataset.line, 10);
+              const nextLine = parseInt(next.dataset.line, 10);
+              const ratio = Math.max(0, topLine - prevLine) / Math.max(1, nextLine - prevLine);
+              pv.scrollTop = prev.offsetTop + ratio * (next.offsetTop - prev.offsetTop);
+            } else {
+              // 最後の要素より先 → 末尾付近
+              const lastEl = annotated[annotated.length - 1];
+              pv.scrollTop = lastEl.offsetTop;
+            }
+          } else {
+            // フォールバック: 比率スクロール
+            const ratio = ta.scrollTop / Math.max(1, ta.scrollHeight - ta.clientHeight);
+            pv.scrollTop = ratio * (pv.scrollHeight - pv.clientHeight);
+          }
+        } catch { }
+        setTimeout(() => { editorScrolling.current = false; }, 60);
+      }, []);
+
+      // スクロール同期（プレビュー → エディタ）data-lineベース精密同期
+      const handlePreviewScroll = useCallback(() => {
+        if (editorScrolling.current) return;
+        const ta = textareaRef.current;
+        const pv = previewRef.current;
+        if (!ta || !pv) return;
+        previewScrolling.current = true;
+        try {
+          const lineCount = ta.value.split('\n').length;
+          const lineH = ta.scrollHeight / Math.max(1, lineCount);
+          const scrollTop = pv.scrollTop;
+          const annotated = [...pv.querySelectorAll('[data-line]')];
+          if (annotated.length >= 2) {
+            let prev = annotated[0], next = null;
+            for (const el of annotated) {
+              if (el.offsetTop <= scrollTop + 10) prev = el;
+              else if (!next) next = el;
+            }
+            if (next) {
+              const ratio = Math.max(0, scrollTop - prev.offsetTop) / Math.max(1, next.offsetTop - prev.offsetTop);
+              const prevLine = parseInt(prev.dataset.line, 10);
+              const nextLine = parseInt(next.dataset.line, 10);
+              const editorLine = prevLine + ratio * (nextLine - prevLine);
+              ta.scrollTop = Math.max(0, editorLine * lineH);
+            } else {
+              const lastLine = parseInt(prev.dataset.line, 10);
+              ta.scrollTop = Math.max(0, lastLine * lineH);
+            }
+          } else {
+            const ratio = scrollTop / Math.max(1, pv.scrollHeight - pv.clientHeight);
+            ta.scrollTop = ratio * (ta.scrollHeight - ta.clientHeight);
+          }
+        } catch { }
+        setTimeout(() => { previewScrolling.current = false; }, 60);
+      }, []);
+
+      // Enter押下でURL行のOGPをバックグラウンドフェッチ
+      const handleKeyDown = useCallback((e) => {
+        if (e.key !== 'Enter') return;
+        const ta = e.target;
+        const pos = ta.selectionStart;
+        const lineStart = ta.value.lastIndexOf('\n', pos - 1) + 1;
+        const line = ta.value.substring(lineStart, pos).trim();
+        if (!line.startsWith('http')) return;
+        try {
+          new URL(line);
+          if (ogpCacheRef.current[line]) return; // キャッシュ済みはスキップ
+          // キャンセルされない独立したバックグラウンドフェッチ
+          fetch(`/api/ogp?url=${encodeURIComponent(line)}`)
+            .then(r => r.ok ? r.json() : null)
+            .then(data => {
+              if (!data) return;
+              const { title, description, image, domain } = data;
+              const isGeneric = !title || /^Amazon[\.\s]/.test(title) || title === 'Amazon.co.jp';
+              if (isGeneric && !image) return;
+              ogpCacheRef.current[line] = { title, description, image, domain };
+              const preview = previewRef.current;
+              if (!preview) return;
+              [...preview.querySelectorAll('a[href]:not(.ogp-card)')].forEach(a => {
+                if (a.getAttribute('href') === line && isOgpUrl(a)) {
+                  a.dataset.ogpProcessed = '1';
+                  insertOgpCard(a, buildOgpCard(line, title, description, image, domain));
+                }
+              });
+            }).catch(() => { });
+        } catch { }
+      }, []);
+
+      // プレビューのダブルクリック → エディタの対応行をプレビューと同じ高さに揃える
+      const handlePreviewDoubleClick = useCallback((e) => {
+        const pv = previewRef.current;
+        const ta = textareaRef.current;
+        if (!pv || !ta) return;
+
+        // クリックされた要素から最も近いdata-line付き祖先を探す
+        let el = e.target;
+        while (el && el !== pv) {
+          if (el.dataset && el.dataset.line !== undefined) break;
+          el = el.parentElement;
+        }
+        if (!el || el === pv) return;
+
+        const elLine = parseInt(el.dataset.line, 10);
+        const lineH = ta.scrollHeight / Math.max(1, ta.value.split('\n').length);
+
+        // クリックした要素がプレビューのビューポート内で何px下にあるか
+        const pvRect = pv.getBoundingClientRect();
+        const elRect = el.getBoundingClientRect();
+        const elViewportTop = elRect.top - pvRect.top;
+
+        // エディタ側: 「対応行 - 同じオフセット分」だけスクロールすれば位置が一致する
+        editorScrolling.current = true;
+        ta.scrollTop = Math.max(0, elLine * lineH - elViewportTop);
+        setTimeout(() => { editorScrolling.current = false; }, 80);
+      }, []);
+
+      // パイプライン実行
+      const handlePipeline = async () => {
+        setPipelineRunning(true);
+        try {
+          await triggerPipeline();
+          showToast('🚀 パイプラインを起動しました！GitHub Actionsで進捗を確認してください。', 'info');
+        } catch (e) {
+          showToast('❌ パイプライン起動に失敗: ' + e.message, 'error');
+        } finally {
+          setPipelineRunning(false);
+        }
+      };
+
+      // note下書き投稿（単体 or 複数選択）
+      const handleNoteDraft = async () => {
+        // 複数選択モード
+        const targetIds = selectMode && selectedIds.size > 0
+          ? Array.from(selectedIds)
+          : selectedArticle ? [selectedArticle.id] : [];
+
+        if (targetIds.length === 0) { showToast('記事を選択してください', 'error'); return; }
+
+        if (hasChanges && !confirm('未保存の変更があります。先に保存しますか？\n「OK」で保存後に投稿、「キャンセル」で現在の保存済み版を投稿')) {
+          return;
+        }
+        if (hasChanges) await handleSave();
+
+        setNoteDraftRunning(true);
+        try {
+          await triggerNoteDraft(targetIds);
+          const count = targetIds.length;
+          showToast(`📝 ${count}件のnote下書き投稿を開始しました！GitHub Actionsで進捗を確認してください。`, 'info');
+          // 選択モードを解除
+          if (selectMode) { setSelectMode(false); setSelectedIds(new Set()); }
+          // 完了後にURLをpolling（最大2分、5秒間隔）
+          pollDraftUrls(targetIds);
+        } catch (e) {
+          showToast('❌ note下書き投稿に失敗: ' + e.message, 'error');
+        } finally {
+          setNoteDraftRunning(false);
+        }
+      };
+
+      // 完了URLをpollingで取得
+      const pollDraftUrls = async (fileIds) => {
+        const pending = new Set(fileIds);
+        for (let attempt = 0; attempt < 24 && pending.size > 0; attempt++) {
+          await new Promise(r => setTimeout(r, 5000));
+          for (const id of Array.from(pending)) {
+            const url = await fetchNoteDraftUrl(id);
+            if (url) {
+              setNoteDraftUrls(prev => {
+                const next = { ...prev, [id]: url };
+                try { localStorage.setItem('sb_noteDraftUrls', JSON.stringify(next)); } catch { }
+                return next;
+              });
+              pending.delete(id);
+            }
+          }
+        }
+      };
+
+      // タイトル編集確定（OneDriveでファイルリネーム + articlesリスト更新）
+      const commitTitleEdit = async () => {
+        if (!selectedArticle || !editedTitle.trim()) {
+          setIsEditingTitle(false);
+          return;
+        }
+        const match = selectedArticle.name.match(/^(\d{8}_\d{4}_)/);
+        const prefix = match ? match[1] : '';
+        const newName = `${prefix}${editedTitle.trim()}.md`;
+
+        // 名前が変わっていなければ何もしない
+        if (newName === selectedArticle.name) {
+          setIsEditingTitle(false);
+          return;
+        }
+
+        try {
+          const result = await renameArticleApi(selectedArticle.id, newName);
+          const renamed = { ...selectedArticle, name: result.name || newName };
+          // selectedArticle と articles リストの両方を更新
+          setSelectedArticle(renamed);
+          setArticles(prev => prev.map(a => a.id === selectedArticle.id ? renamed : a));
+          showToast('✏️ タイトルを変更しました', 'success');
+        } catch (e) {
+          showToast('タイトル変更に失敗しました: ' + e.message, 'error');
+        } finally {
+          setIsEditingTitle(false);
+        }
+      };
+
+      // Markdown プレビュー（複数改行を <br> で保持）+ トークン行マップ構築
+      const renderedHTML = useMemo(() => {
+        try {
+          const processed = (content || '').replace(/\n{3,}/g, (m) => {
+            const extra = m.length - 2;
+            return '\n\n' + Array(extra).fill('<br>').join('\n') + '\n\n';
+          });
+          // トークン行マップ構築（スクロール同期用）
+          try {
+            const tokens = marked.lexer(processed);
+            const map = [];
+            let lineNum = 0;
+            for (const token of tokens) {
+              if (['paragraph', 'heading', 'code', 'blockquote', 'list', 'table', 'hr', 'html', 'space'].includes(token.type)) {
+                if (token.type !== 'space') {
+                  map.push({ line: lineNum, type: token.type });
+                }
+              }
+              if (token.raw) lineNum += (token.raw.match(/\n/g) || []).length;
+            }
+            tokenLineMapRef.current = map;
+          } catch { tokenLineMapRef.current = []; }
+          return marked.parse(processed);
+        } catch { return '<p>Markdownの解析に失敗しました</p>'; }
+      }, [content]);
+
+      // プレビュー要素に data-line（ソース行番号）を付与（スクロール同期用）
+      useLayoutEffect(() => {
+        const pv = previewRef.current;
+        if (!pv) return;
+        const map = tokenLineMapRef.current;
+        if (!map.length) return;
+        // プレビュー直下のブロック要素を取得（marked出力の直接子要素）
+        const blocks = [...pv.children].filter(el =>
+          /^(P|H[1-6]|UL|OL|PRE|BLOCKQUOTE|TABLE|HR|DIV)$/.test(el.tagName)
+        );
+        let mapIdx = 0;
+        for (const el of blocks) {
+          if (mapIdx >= map.length) break;
+          el.dataset.line = String(map[mapIdx].line);
+          mapIdx++;
+        }
+      }, [renderedHTML]);
+
+      // キャッシュ済みOGPカードをDOMリセット直後に即時再適用（塗り前に実行）
+      // → エディタ編集中もOGPカードが消えない
+      // ※ renderedHTML の useMemo より後に定義すること（const TDZ回避）
+      useLayoutEffect(() => {
+        const preview = previewRef.current;
+        if (!preview || !Object.keys(ogpCacheRef.current).length) return;
+        [...preview.querySelectorAll('a[href^="http"]:not(.ogp-card)')].forEach(a => {
+          if (!isOgpUrl(a)) return;
+          const href = a.getAttribute('href');
+          const cached = ogpCacheRef.current[href];
+          if (cached) {
+            a.dataset.ogpProcessed = '1'; // 重複fetch防止
+            insertOgpCard(a, buildOgpCard(href, cached.title, cached.description, cached.image, cached.domain));
+          }
+        });
+      }, [renderedHTML]);
+
+      // OGPカード変換（renderedHTML変更後にpreview DOMを走査）
+      // キャッシュ利用・2並列スタガー・自動リトライ対応
+      useEffect(() => {
+        const preview = previewRef.current;
+        if (!preview) return;
+        let aborted = false;
+
+        // 未処理の素URLリンクのみ取得（.ogp-card は絶対除外）
+        const getUnprocessed = () =>
+          [...preview.querySelectorAll('a[href^="http"]:not(.ogp-card)')].filter(a => {
+            if (a.dataset.ogpProcessed) return false;
+            return isOgpUrl(a);
+          });
+
+        // URLがAmazon系かどうか判定
+        const isAmazonHref = (href) =>
+          /amazon\.(co\.jp|com|co\.uk|de|fr)/.test(href) ||
+          href.includes('amzn.to') || href.includes('amzn.asia');
+
+        const delay = (ms) => new Promise(r => setTimeout(r, ms));
+
+        // Amazon以外: 2並列ワーカー / Amazon: シングルワーカー（長め間隔）
+        const runWorkers = async (items) => {
+          const queue = [...items];
+
+          const processOne = async (a) => {
+            if (!a || a.dataset.ogpProcessed || a.classList.contains('ogp-card')) return false;
+            if (!a.isConnected) return false;
+            a.dataset.ogpProcessed = '1';
+            const href = a.getAttribute('href');
+            const isAmz = isAmazonHref(href);
+            try {
+              const r = await fetch(`/api/ogp?url=${encodeURIComponent(href)}`);
+              if (r.ok) {
+                const { title, description, image, domain } = await r.json();
+                const isGeneric = !title || /^Amazon[\.\s]/.test(title) || title === 'Amazon.co.jp';
+                if ((!isGeneric || image) && !aborted && a.isConnected) {
+                  ogpCacheRef.current[href] = { title, description, image, domain };
+                  insertOgpCard(a, buildOgpCard(href, title, description, image, domain));
+                  return true;
+                }
+              }
+            } catch { }
+            if (!aborted && a.isConnected) a.removeAttribute('data-ogp-processed');
+            return false;
+          };
+
+          const amazonItems = queue.filter(a => isAmazonHref(a.getAttribute('href') || ''));
+          const otherItems = queue.filter(a => !isAmazonHref(a.getAttribute('href') || ''));
+
+          // Amazon以外: 2並列ワーカー（500ms間隔）
+          const runOther = async (startDelay = 0) => {
+            if (startDelay) await delay(startDelay);
+            while (!aborted) {
+              const a = otherItems.shift();
+              if (!a) break;
+              await processOne(a);
+              if (!aborted) await delay(500);
+            }
+          };
+
+          // Amazon: シングルワーカー（2000ms間隔でレート制限を確実回避）
+          const runAmazon = async () => {
+            for (const a of amazonItems) {
+              if (aborted) break;
+              await processOne(a);
+              if (!aborted) await delay(2200);
+            }
+          };
+
+          await Promise.all([runOther(0), runOther(300), runAmazon()]);
+        };
+
+        // 最大4回の自動リトライ（失敗リンクが残っていれば2秒後に再実行）
+        const processWithRetry = async () => {
+          for (let attempt = 0; attempt < 4 && !aborted; attempt++) {
+            const items = getUnprocessed();
+            if (items.length === 0) break;
+            await runWorkers(items);
+            if (aborted) break;
+            if (getUnprocessed().length === 0) break;
+            await delay(2000);
+          }
+          // 最終フォールバック: 全リトライ後も残った素URLリンクを最低限カード化
+          if (!aborted) {
+            getUnprocessed().forEach(a => {
+              if (!a.isConnected) return;
+              const href = a.getAttribute('href') || '';
+              let domain = '';
+              try { domain = new URL(href).hostname; } catch { }
+              if (!domain) return;
+              a.dataset.ogpProcessed = '1';
+              const asin = href.match(/\/dp\/([A-Z0-9]{10})/)?.[1];
+              const fallbackTitle = asin ? `Amazon商品 (${asin})` : null;
+              ogpCacheRef.current[href] = { title: fallbackTitle, description: null, image: null, domain };
+              insertOgpCard(a, buildOgpCard(href, fallbackTitle, null, null, domain));
+            });
+          }
+        };
+
+        processWithRetry();
+        return () => { aborted = true; };
+      }, [renderedHTML, ogpTrigger]);
+
+      // OGP更新: .ogp-card（成功済み）は完全スキップ、失敗<a>のみ再試行
+      const refreshOgp = useCallback(() => {
+        if (previewRef.current) {
+          // .ogp-card でない <a> の data-ogp-processed を除去（成功カードに触れない）
+          previewRef.current.querySelectorAll('a[data-ogp-processed]:not(.ogp-card)').forEach(a => {
+            a.removeAttribute('data-ogp-processed');
+          });
+        }
+        setOgpTrigger(t => t + 1);
+      }, []);
+
+      // 検索・置換ナビゲーション
+      const goNextMatch = useCallback(() => {
+        if (findMatches.length === 0) return;
+        const next = (safeMatchIndex + 1) % findMatches.length;
+        setMatchIndex(next);
+        const pos = findMatches[next];
+        const ta = textareaRef.current;
+        if (ta) { ta.setSelectionRange(pos, pos + findText.length); ta.focus(); }
+      }, [findMatches, safeMatchIndex, findText]);
+
+      const goPrevMatch = useCallback(() => {
+        if (findMatches.length === 0) return;
+        const prev = (safeMatchIndex - 1 + findMatches.length) % findMatches.length;
+        setMatchIndex(prev);
+        const pos = findMatches[prev];
+        const ta = textareaRef.current;
+        if (ta) { ta.setSelectionRange(pos, pos + findText.length); ta.focus(); }
+      }, [findMatches, safeMatchIndex, findText]);
+
+      const handleReplaceOne = useCallback(() => {
+        if (findMatches.length === 0) return;
+        const pos = findMatches[safeMatchIndex];
+        const newC = content.substring(0, pos) + replaceText + content.substring(pos + findText.length);
+        setContent(newC);
+        setMatchIndex(Math.min(safeMatchIndex, Math.max(0, findMatches.length - 2)));
+      }, [findMatches, safeMatchIndex, content, findText, replaceText]);
+
+      const handleReplaceAll = useCallback(() => {
+        if (findMatches.length === 0) return;
+        setContent(content.split(findText).join(replaceText));
+        setMatchIndex(0);
+      }, [findMatches, content, findText, replaceText]);
+
+      // キーボードショートカット（Ctrl+S / Ctrl+B / Ctrl+Z / Ctrl+F）
+      useEffect(() => {
+        const handler = (e) => {
+          if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); handleSave(); }
+          if (e.key === 'Escape' && isEditingTitle) { setIsEditingTitle(false); }
+          if (e.key === 'Escape' && showFindReplace) { setShowFindReplace(false); textareaRef.current?.focus(); }
+          // Ctrl+F: 検索パネルの開閉
+          if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+            e.preventDefault();
+            setShowFindReplace(v => { if (!v) setTimeout(() => findInputRef.current?.focus(), 50); return !v; });
+          }
+          // Ctrl+B: 太字
+          if ((e.ctrlKey || e.metaKey) && e.key === 'b') {
+            e.preventDefault();
+            const ta = textareaRef.current;
+            if (ta) {
+              const start = ta.selectionStart;
+              const end = ta.selectionEnd;
+              const sel = content.substring(start, end);
+              const newC = content.substring(0, start) + '**' + sel + '**' + content.substring(end);
+              setContent(newC);
+              setTimeout(() => { ta.selectionStart = start + 2; ta.selectionEnd = end + 2; ta.focus(); }, 0);
+            }
+          }
+          // Ctrl+Z: Undo（アフィリエイトモーダルにフォーカスがある場合はネイティブundoに任せる）
+          // Esc: 複数選択解除
+          if (e.key === 'Escape' && multiSelectedIds.size > 0) {
+            setMultiSelectedIds(new Set());
+            return;
+          }
+          if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+            const active = document.activeElement;
+            if (active && active.closest && active.closest('.aff-modal')) return;
+            if (undoStack.current.length > 0) {
+              e.preventDefault();
+              const prev = undoStack.current.pop();
+              lastSavedText.current = prev;
+              setContent(prev);
+            }
+          }
+        };
+        window.addEventListener('keydown', handler);
+        return () => window.removeEventListener('keydown', handler);
+      }, [content, selectedArticle, isNewArticle, newFilename, isEditingTitle, showFindReplace, multiSelectedIds]);
+
+      // タイトル編集フォーカス
+      useEffect(() => {
+        if (isEditingTitle && titleInputRef.current) titleInputRef.current.focus();
+      }, [isEditingTitle]);
+
+      return (
+        <div className="flex h-screen overflow-hidden">
+          {/* サイドバー */}
+          <Sidebar
+            articles={articles}
+            selectedId={selectedArticle?.id}
+            onSelect={handleSelect}
+            onNewArticle={handleNewArticle}
+            loading={loading}
+            sidebarWidth={sidebarWidth}
+            onResizeStart={onSidebarResizeStart}
+            isCollapsed={sidebarCollapsed}
+            onToggle={() => setSidebarCollapsed(v => !v)}
+            mobileSidebarOpen={mobileSidebarOpen}
+            onMobileClose={() => setMobileSidebarOpen(false)}
+            onDeleteArticle={handleDeleteArticle}
+            onDuplicateArticle={handleDuplicateArticle}
+            onMoveArticle={handleMoveArticle}
+            selectMode={selectMode}
+            selectedIds={selectedIds}
+            onToggleSelect={(id) => {
+              setSelectedIds(prev => {
+                const next = new Set(prev);
+                next.has(id) ? next.delete(id) : next.add(id);
+                return next;
+              });
+            }}
+            onEnterSelectMode={(article) => {
+              setSelectMode(true);
+              setSelectedIds(new Set([article.id]));
+            }}
+            multiSelectedIds={multiSelectedIds}
+            onMultiSelect={handleMultiSelect}
+            onRangeSelect={handleRangeSelect}
+            setAffModalOpen={setAffModalOpen}
+            articleH1Cache={articleH1Cache}
+            folderMeta={folderMeta}
+            folderLoading={folderLoading}
+            onLoadFolder={loadFolder}
+            externalFolderUrls={externalFolderUrls}
+            setExternalFolderUrls={setExternalFolderUrls}
+            onRefreshArticles={loadArticles}
+          />
+
+          {/* メインコンテンツ */}
+          <main className="flex-1 flex flex-col min-w-0 h-screen">
+            {/* ツールバー */}
+            <header className="bg-white border-b border-slate-200 px-4 py-2.5 flex items-center gap-3 shrink-0 min-h-[52px]">
+              {/* ハンバーガーメニュー（モバイルのみ） */}
+              <button
+                className="lg:hidden p-1.5 text-slate-500 hover:bg-slate-100 rounded-lg transition-colors flex-shrink-0"
+                onClick={() => setMobileSidebarOpen(true)}
+                id="hamburger-btn"
+                title="メニューを開く"
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M3 12h18M3 6h18M3 18h18" />
+                </svg>
+              </button>
+              {/* ファイル名 / タイトル */}
+              <div className="flex-1 min-w-0 flex items-center gap-2">
+                {isNewArticle ? (
+                  <input
+                    type="text"
+                    value={newFilename}
+                    onChange={(e) => setNewFilename(e.target.value)}
+                    className="max-w-xs text-sm font-medium text-slate-700 border border-slate-200 rounded-lg px-3 py-1 focus:outline-none focus:ring-2 focus:ring-[#7C4DFF] focus:border-transparent"
+                    placeholder="ファイル名.md"
+                    id="filename-input"
+                  />
+                ) : selectedArticle ? (
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    {isEditingTitle ? (
+                      <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                        <input
+                          ref={titleInputRef}
+                          type="text"
+                          value={editedTitle}
+                          onChange={(e) => setEditedTitle(e.target.value)}
+                          onBlur={commitTitleEdit}
+                          onKeyDown={(e) => { if (e.key === 'Enter') commitTitleEdit(); }}
+                          className="title-input text-slate-800 bg-slate-50 border border-[#7C4DFF] rounded px-2 py-0.5 focus:outline-none max-w-sm"
+                          id="title-edit-input"
+                        />
+                        <button onClick={commitTitleEdit} className="text-[#7C4DFF] hover:text-[#651FFF] p-1 rounded" title="確定">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M20 6L9 17l-5-5" /></svg>
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <div className="min-w-0">
+                          <h2 className="text-sm font-bold text-slate-800 truncate max-w-xs">
+                            {selectedArticle.h1Title || (articleH1Cache && articleH1Cache[selectedArticle.id]) || selectedArticle.name.replace(/^\d{8}_\d{4}_/, '').replace('.md', '')}
+                          </h2>
+                          <p className="text-xs text-slate-400">
+                            {new Date(selectedArticle.lastModified).toLocaleString('ja-JP')}
+                            {hasChanges && <span className="ml-2 text-amber-500 font-medium">● 未保存</span>}
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => { setEditedTitle(selectedArticle.h1Title || (articleH1Cache && articleH1Cache[selectedArticle.id]) || selectedArticle.name.replace(/^\d{8}_\d{4}_/, '').replace('.md', '')); setIsEditingTitle(true); }}
+                          className="p-1 text-slate-300 hover:text-[#7C4DFF] rounded transition-colors flex-shrink-0"
+                          title="タイトルを編集"
+                          id="edit-title-btn"
+                        >
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-sm text-slate-400">記事を選択してください</p>
+                )}
+              </div>
+
+              {/* アクションボタン群 */}
+              <div className="flex items-center gap-2 flex-shrink-0">
+                {/* Amazon検索フォーム */}
+                <form
+                  className="hidden md:flex items-center gap-1"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    const q = e.currentTarget.querySelector('input').value.trim();
+                    if (q) window.open(`https://www.amazon.co.jp/s?k=${encodeURIComponent(q)}`, '_blank');
+                  }}
+                >
+                  <input
+                    type="text"
+                    placeholder="Amazon検索..."
+                    className="border border-slate-200 rounded-lg px-2 py-1.5 text-xs text-slate-600 focus:outline-none focus:border-orange-400 focus:ring-1 focus:ring-orange-100"
+                    style={{ width: '130px' }}
+                  />
+                  <button
+                    type="submit"
+                    className="flex items-center gap-1 font-semibold rounded-lg px-2.5 py-1.5 text-xs border border-orange-400 text-orange-500 hover:bg-orange-50 transition-all"
+                    title="Amazonで検索"
+                  >
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" /></svg>
+                    <span className="hidden lg:inline">Amazon</span>
+                  </button>
+                </form>
+                {/* 選択モード解除ボタン */}
+                {selectMode && (
+                  <button
+                    onClick={() => { setSelectMode(false); setSelectedIds(new Set()); }}
+                    className="hidden sm:flex items-center gap-1.5 font-semibold rounded-lg px-3 py-2 text-xs border border-slate-300 text-slate-500 hover:bg-slate-100 transition-all"
+                    title="選択モードを解除"
+                  >
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6L6 18M6 6l12 12" /></svg>
+                    <span className="hidden lg:inline">解除</span>
+                  </button>
+                )}
+                {/* note下書きボタン */}
+                <button
+                  onClick={handleNoteDraft}
+                  disabled={noteDraftRunning || (!selectedArticle && !(selectMode && selectedIds.size > 0))}
+                  className={`flex items-center gap-1.5 font-semibold rounded-lg px-3 py-2 text-xs transition-all border ${noteDraftRunning
+                      ? 'border-slate-200 text-slate-400 cursor-not-allowed'
+                      : (!selectedArticle && !(selectMode && selectedIds.size > 0))
+                        ? 'border-slate-200 text-slate-300 cursor-not-allowed'
+                        : 'border-[#7C4DFF] text-[#7C4DFF] hover:bg-purple-50'
+                    }`}
+                  title={selectMode && selectedIds.size > 0 ? `${selectedIds.size}件をnoteに下書き保存` : 'この記事をnoteに下書き保存'}
+                  id="note-draft-btn"
+                >
+                  {noteDraftRunning ? (
+                    <svg className="animate-spin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a9 9 0 11-6.219-8.56" /></svg>
+                  ) : (
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 20h9M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z" /></svg>
+                  )}
+                  <span className="hidden sm:inline">
+                    {noteDraftRunning ? '投稿中...' : selectMode && selectedIds.size > 0 ? `下書き(${selectedIds.size})` : '下書き'}
+                  </span>
+                </button>
+                {/* パイプライン実行ボタン (保存の左隣) */}
+                <button
+                  onClick={handlePipeline}
+                  disabled={pipelineRunning}
+                  className={`flex items-center gap-1.5 font-semibold rounded-lg px-3 py-2 text-xs transition-all border ${pipelineRunning
+                      ? 'border-slate-200 text-slate-400 cursor-not-allowed'
+                      : 'border-[#7C4DFF] text-[#7C4DFF] hover:bg-purple-50'
+                    }`}
+                  id="trigger-pipeline-btn"
+                  title="パイプライン実行"
+                >
+                  {pipelineRunning ? (
+                    <svg className="animate-spin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a9 9 0 11-6.219-8.56" /></svg>
+                  ) : (
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M8 5v14l11-7z" /></svg>
+                  )}
+                  <span className="hidden sm:inline">パイプライン</span>
+                </button>
+
+                {/* 保存ボタン */}
+                <button
+                  onClick={handleSave}
+                  disabled={saving || (!selectedArticle && !isNewArticle)}
+                  className={`flex items-center gap-1.5 font-bold rounded-lg px-4 py-2 text-sm transition-all shadow-sm ${saving
+                      ? 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                      : 'bg-[#7C4DFF] text-white hover:bg-[#651FFF] shadow-purple-200'
+                    }`}
+                  id="save-btn"
+                >
+                  {saving ? (
+                    <>
+                      <svg className="animate-spin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a9 9 0 11-6.219-8.56" /></svg>
+                      保存中...
+                    </>
+                  ) : (
+                    <>
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z" /><path d="M17 21v-8H7v8M7 3v5h8" /></svg>
+                      <span className="hidden sm:inline">保存</span>
+                    </>
+                  )}
+                </button>
+
+                {/* リロード */}
+                <button
+                  onClick={loadArticles}
+                  className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-full transition-colors"
+                  title="記事一覧を更新" id="reload-btn"
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 4v6h6M23 20v-6h-6" /><path d="M20.49 9A9 9 0 005.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 013.51 15" /></svg>
+                </button>
+              </div>
+            </header>
+
+            {/* モバイル用タブ */}
+            <div className="lg:hidden flex border-b border-slate-200 bg-white shrink-0">
+              <button onClick={() => setMobileTab('editor')} className={`flex-1 py-2.5 text-sm text-center transition-colors ${mobileTab === 'editor' ? 'tab-active' : 'text-slate-400'}`}>エディタ</button>
+              <button onClick={() => setMobileTab('preview')} className={`flex-1 py-2.5 text-sm text-center transition-colors ${mobileTab === 'preview' ? 'tab-active' : 'text-slate-400'}`}>プレビュー</button>
+            </div>
+
+            {/* エディタ + プレビュー */}
+            {contentLoading ? (
+              <div className="flex-1 flex items-center justify-center">
+                <div className="text-center">
+                  <div className="skeleton w-10 h-10 rounded-full mx-auto mb-3" />
+                  <p className="text-slate-400 text-sm">読み込み中...</p>
+                </div>
+              </div>
+            ) : !selectedArticle && !isNewArticle ? (
+              /* 空の状態 */
+              <div className="flex-1 flex items-center justify-center animate-fade-in">
+                <div className="text-center px-8">
+                  <div className="w-20 h-20 mx-auto mb-5 rounded-2xl bg-gradient-to-br from-[#7C4DFF] to-[#651FFF] flex items-center justify-center shadow-lg shadow-purple-200">
+                    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="1.5"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8" /></svg>
+                  </div>
+                  <h2 className="text-xl font-bold text-slate-800 mb-2">Vibe Blog Engine</h2>
+                  <p className="text-slate-400 text-sm max-w-xs leading-relaxed">サイドバーから記事を選択するか、<br />「新規作成」で始めましょう。</p>
+                  <button
+                    onClick={handleNewArticle}
+                    className="mt-5 flex items-center justify-center gap-2 bg-[#7C4DFF] text-white font-bold rounded-lg px-6 py-3 hover:bg-[#651FFF] transition-colors text-sm mx-auto"
+                  >
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 5v14M5 12h14" /></svg>
+                    新規作成
+                  </button>
+                </div>
+              </div>
+            ) : (
+              /* エディタ + プレビュー（リサイズ対応） */
+              <div ref={editorAreaRef} className="flex-1 flex overflow-hidden">
+                {/* エディタ */}
+                <div
+                  className={`flex flex-col border-r border-slate-200 ${mobileTab === 'preview' ? 'hidden lg:flex' : 'flex'}`}
+                  style={isDesktop ? { width: `${editorRatio * 100}%`, flexShrink: 0 } : { width: '100%' }}
+                >
+                  <div className="px-4 py-1.5 bg-slate-50 border-b border-slate-100 text-xs text-slate-400 font-medium flex items-center gap-2 shrink-0">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
+                    MARKDOWN
+                    {/* YouTube元動画リンク */}
+                    {selectedArticle && (youtubeUrl ? (
+                      /* URL あり: 紫の動画アイコン */
+                      <a
+                        href={youtubeUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center rounded p-0.5 transition-colors hover:bg-purple-50 text-purple-400 hover:text-purple-600"
+                        title="元のYouTube動画を開く"
+                        onContextMenu={(e) => { e.preventDefault(); setYtInputVal(youtubeUrl); setYtInputOpen(true); }}
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <polygon points="23 7 16 12 23 17 23 7" />
+                          <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
+                        </svg>
+                      </a>
+                    ) : ytInputOpen ? (
+                      /* URL 入力フォーム（インライン） */
+                      <span className="flex items-center gap-1">
+                        <input
+                          autoFocus
+                          type="text"
+                          value={ytInputVal}
+                          onChange={e => setYtInputVal(e.target.value)}
+                          onKeyDown={e => { if (e.key === 'Enter') saveYtUrl(); if (e.key === 'Escape') { setYtInputOpen(false); setYtInputVal(''); } }}
+                          placeholder="YouTube URL を貼り付け..."
+                          className="border border-purple-300 rounded px-1.5 py-0.5 text-xs text-slate-700 focus:outline-none focus:border-purple-500"
+                          style={{ width: '200px' }}
+                        />
+                        <button onClick={saveYtUrl} className="text-purple-500 hover:text-purple-700 font-bold text-xs px-1">✓</button>
+                        <button onClick={() => { setYtInputOpen(false); setYtInputVal(''); }} className="text-slate-400 hover:text-slate-600 text-xs px-1">✕</button>
+                      </span>
+                    ) : (
+                      /* URL なし: ✙ ボタンでリンク手動登録 */
+                      <button
+                        onClick={() => setYtInputOpen(true)}
+                        className="flex items-center rounded p-0.5 transition-colors hover:bg-purple-50 text-slate-300 hover:text-purple-400"
+                        title="YouTube動画URLを登録"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <polygon points="23 7 16 12 23 17 23 7" />
+                          <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
+                        </svg>
+                        <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" style={{ marginLeft: '1px', marginTop: '-4px' }}><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
+                      </button>
+                    ))}
+                    {/* note下書き保存先URL */}
+                    {selectedArticle && noteDraftUrls[selectedArticle.id] && (
+                      <a
+                        href={noteDraftUrls[selectedArticle.id]}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors hover:bg-purple-100 text-purple-500 hover:text-purple-700"
+                        title="noteで開く"
+                      >
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><path d="M14 2v6h6" /></svg>
+                        保存先URL
+                      </a>
+                    )}
+                    {autoSaveStatus === 'pending' && <span className="text-slate-300 text-xs" title="自動保存待機中...">●</span>}
+                    {autoSaveStatus === 'saved' && <span className="text-green-400 text-xs" title="自動保存完了">✓</span>}
+                    <span className="ml-auto">{content.length.toLocaleString()} 文字</span>
+                    {/* Amazonアフィリエイトリンク一括削除ボタン */}
+                    <button
+                      onClick={() => {
+                        // amazon.co.jp/dp/{ASIN}/ref=nosim?tag=hiroshit-22 形式の行を削除
+                        const AMAZON_RE = /^https:\/\/www\.amazon\.co\.jp\/dp\/[A-Z0-9]{10}\/ref=nosim\?tag=hiroshit-22$/;
+                        const lines = content.split('\n');
+                        // 削除対象行のインデックスを収集
+                        const removeIdx = new Set(
+                          lines.reduce((acc, ln, i) => {
+                            if (AMAZON_RE.test(ln.trim())) acc.push(i);
+                            return acc;
+                          }, [])
+                        );
+                        if (removeIdx.size === 0) { showToast('削除対象のAmazonリンクが見つかりません', 'error'); return; }
+                        // 該当行とその前後の空行を除去
+                        const filtered = lines.filter((ln, i) => {
+                          if (removeIdx.has(i)) return false;
+                          // 前後がリンク行だった空行も除去（連続空行を1つに正規化）
+                          const prevIsLink = removeIdx.has(i - 1);
+                          const nextIsLink = removeIdx.has(i + 1);
+                          if ((prevIsLink || nextIsLink) && ln.trim() === '') return false;
+                          return true;
+                        });
+                        // 連続する空行を最大2行に正規化
+                        const normalized = [];
+                        let blankCount = 0;
+                        for (const ln of filtered) {
+                          if (ln.trim() === '') { blankCount++; if (blankCount <= 2) normalized.push(ln); }
+                          else { blankCount = 0; normalized.push(ln); }
+                        }
+                        setContent(normalized.join('\n'));
+                        showToast(`Amazonアフィリエイトリンクを${removeIdx.size}件削除しました`, 'success');
+                      }}
+                      className="flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors hover:text-red-500 hover:bg-red-50"
+                      title="挿入済みAmazonアフィリエイトリンクを全て削除"
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6L6 18M6 6l12 12" /></svg>
+                    </button>
+                    {/* リンク挿入ボタン: クリップボード内容を偶数番目H2（2,4,6...）の直前に挿入 */}
+                    <button
+                      onClick={async () => {
+                        try {
+                          const clip = await navigator.clipboard.readText();
+                          if (!clip.trim()) { showToast('クリップボードが空です', 'error'); return; }
+                          const lines = content.split('\n');
+                          // H2行のインデックスを収集（1-indexed count）
+                          const h2Indices = [];
+                          lines.forEach((ln, i) => { if (/^## /.test(ln)) h2Indices.push(i); });
+                          if (h2Indices.length < 2) { showToast('H2見出しが2つ以上必要です', 'error'); return; }
+                          // 偶数番目（2,4,6...→0-indexed: 1,3,5...）の直前に挿入（逆順で行番号ズレ防止）
+                          const targets = h2Indices.filter((_, idx) => idx % 2 === 1).reverse();
+                          const insertBlock = `\n${clip.trim()}\n`;
+                          let result = [...lines];
+                          for (const lineIdx of targets) {
+                            result = [...result.slice(0, lineIdx), '', clip.trim(), '', ...result.slice(lineIdx)];
+                          }
+                          setContent(result.join('\n'));
+                          showToast(`${targets.length}箇所にリンクを挿入しました`, 'success');
+                        } catch { showToast('クリップボードの読み取りに失敗しました', 'error'); }
+                      }}
+                      className="flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors hover:text-purple-600 hover:bg-purple-50"
+                      title="クリップボードの内容を偶数番目H2（2,4,6...）の直前に挿入"
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71" /><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71" /></svg>
+                    </button>
+                    <button
+                      onClick={async () => {
+                        try { await navigator.clipboard.writeText(content); setCopied(true); setTimeout(() => setCopied(false), 2000); }
+                        catch { showToast('コピーに失敗しました', 'error'); }
+                      }}
+                      className={`flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors ${copied ? 'text-green-500' : 'hover:text-slate-600 hover:bg-slate-200'}`}
+                      title="全文をコピー"
+                    >
+                      {copied
+                        ? <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M20 6L9 17l-5-5" /></svg>
+                        : <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" /></svg>
+                      }
+                    </button>
+                  </div>
+                  <textarea
+                    ref={textareaRef}
+                    onScroll={handleEditorScroll}
+                    onKeyDown={handleKeyDown}
+                    value={content}
+                    onChange={(e) => {
+                      const newVal = e.target.value;
+                      // debounce で 500ms 後に現在値を undo スタックに積む
+                      clearTimeout(undoDebounce.current);
+                      undoDebounce.current = setTimeout(() => {
+                        if (newVal !== lastSavedText.current) {
+                          undoStack.current = [...undoStack.current.slice(-99), lastSavedText.current];
+                          lastSavedText.current = newVal;
+                        }
+                      }, 500);
+                      setContent(newVal);
+                    }}
+                    className="editor-textarea flex-1 w-full p-4 bg-white text-slate-700 focus:outline-none"
+                    placeholder="Markdownを入力..."
+                    spellCheck={false}
+                    id="editor-textarea"
+                  />
+                </div>
+
+                {/* リサイズハンドル（デスクトップのみ） */}
+                <div
+                  className={`resize-handle hidden lg:block`}
+                  onMouseDown={onEditorResizeStart}
+                />
+
+                {/* プレビュー */}
+                <div
+                  className={`flex flex-col ${mobileTab === 'editor' ? 'hidden lg:flex' : 'flex'}`}
+                  style={{ flex: 1, minWidth: 0 }}
+                >
+                  <div className="px-4 py-1.5 bg-slate-50 border-b border-slate-100 text-xs text-slate-400 font-medium flex items-center gap-2 shrink-0">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>
+                    プレビュー
+                    <button
+                      onClick={refreshOgp}
+                      className="flex items-center gap-0.5 rounded px-1 py-0.5 hover:bg-purple-100 hover:text-purple-600 transition-colors"
+                      title="OGPリンクを再読み込み"
+                    >
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M1 4v6h6M23 20v-6h-6" /><path d="M20.49 9A9 9 0 005.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 013.51 15" /></svg>
+                      OGP更新
+                    </button>
+                  </div>
+                  <div
+                    ref={previewRef}
+                    onScroll={handlePreviewScroll}
+                    onDoubleClick={handlePreviewDoubleClick}
+                    className="flex-1 overflow-y-auto p-6 markdown-preview animate-fade-in"
+                    dangerouslySetInnerHTML={{ __html: renderedHTML }}
+                    id="preview-area"
+                  />
+                </div>
+              </div>
+            )}
+          </main>
+
+          {/* 検索と置換パネル（fixed） */}
+          {showFindReplace && (
+            <div style={{ position: 'fixed', top: '60px', right: '16px', zIndex: 1000, width: '340px' }}
+              className="bg-white border border-slate-300 rounded-lg shadow-xl text-sm"
+            >
+              <div className="flex items-center gap-1 px-2 py-1.5 border-b border-slate-100">
+                <svg className="text-slate-400 shrink-0" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" /></svg>
+                <input ref={findInputRef} value={findText}
+                  onChange={e => { setFindText(e.target.value); setMatchIndex(0); }}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') { e.preventDefault(); e.shiftKey ? goPrevMatch() : goNextMatch(); }
+                    if (e.key === 'Escape') { setShowFindReplace(false); textareaRef.current?.focus(); }
+                  }}
+                  placeholder="検索"
+                  className="flex-1 border border-slate-200 rounded px-1.5 py-0.5 text-slate-700 focus:outline-none focus:border-[#7C4DFF] text-xs"
+                  style={{ minWidth: 0 }}
+                />
+                <span className="text-slate-400 text-xs whitespace-nowrap shrink-0 min-w-[2.5rem] text-right">
+                  {findText ? (findMatches.length > 0 ? `${safeMatchIndex + 1}/${findMatches.length}` : '0件') : ''}
+                </span>
+                <button onClick={goPrevMatch} disabled={findMatches.length === 0} className="p-1 rounded hover:bg-slate-100 text-slate-500 disabled:opacity-30" title="前へ">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 15l-6-6-6 6" /></svg>
+                </button>
+                <button onClick={goNextMatch} disabled={findMatches.length === 0} className="p-1 rounded hover:bg-slate-100 text-slate-500 disabled:opacity-30" title="次へ">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M6 9l6 6 6-6" /></svg>
+                </button>
+                <button onClick={() => { setShowFindReplace(false); textareaRef.current?.focus(); }} className="p-1 rounded hover:bg-slate-100 text-slate-500" title="閉じる">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6L6 18M6 6l12 12" /></svg>
+                </button>
+              </div>
+              <div className="flex items-center gap-1 px-2 py-1.5">
+                <svg className="text-slate-400 shrink-0" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 7h16M4 12h10M4 17h13" /><path d="M20 14l-3 3 3 3" /></svg>
+                <input ref={replaceInputRef} value={replaceText}
+                  onChange={e => setReplaceText(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') { e.preventDefault(); handleReplaceOne(); }
+                    if (e.key === 'Escape') { setShowFindReplace(false); textareaRef.current?.focus(); }
+                  }}
+                  placeholder="置換"
+                  className="flex-1 border border-slate-200 rounded px-1.5 py-0.5 text-slate-700 focus:outline-none focus:border-[#7C4DFF] text-xs"
+                  style={{ minWidth: 0 }}
+                />
+                <button onClick={handleReplaceOne} disabled={findMatches.length === 0} className="flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-slate-100 hover:bg-slate-200 text-slate-600 disabled:opacity-30 whitespace-nowrap" title="1件置換">
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M7 16V4m0 0L3 8m4-4l4 4" /><path d="M17 8v12m0 0l4-4m-4 4l-4-4" /></svg>1件
+                </button>
+                <button onClick={handleReplaceAll} disabled={findMatches.length === 0} className="flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-slate-100 hover:bg-slate-200 text-slate-600 disabled:opacity-30 whitespace-nowrap" title="全て置換">
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 16V4m0 0L1 7m3-3l3 3" /><path d="M10 16V4m0 0L7 7m3-3l3 3" /><path d="M20 8v12m0 0l-3-3m3 3l3-3" /></svg>全て
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* アフィリンクモーダル */}
+          <AffiliateLinkModal isOpen={affModalOpen} onClose={() => setAffModalOpen(false)} showToast={showToast} />
+
+          {/* トースト */}
+          {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+        </div>
+      );
+    }
+
+    // === マウント ===
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+
+</html>

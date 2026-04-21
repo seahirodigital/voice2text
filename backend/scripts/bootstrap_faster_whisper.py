@@ -21,7 +21,7 @@ def main() -> None:
     models_root = Path(os.path.expandvars(str(models_root))).expanduser().resolve()
     models_root.mkdir(parents=True, exist_ok=True)
 
-    model_name = os.getenv("VOICE2TEXT_FASTER_WHISPER_MODEL", "base")
+    model_name = os.getenv("VOICE2TEXT_FASTER_WHISPER_MODEL", "small")
     print(f"[Voice2Text] Ensuring Faster Whisper model '{model_name}' under: {models_root}")
     WhisperModel(
         model_name,

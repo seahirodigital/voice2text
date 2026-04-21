@@ -23,7 +23,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "modelPreset": "base",
         "batchTranscriptionEngine": "faster-whisper",
         "batchMoonshineModelPreset": "base",
-        "fasterWhisperModel": "base",
+        "fasterWhisperModel": "small",
         "maxSpeakers": 3,
         "updateIntervalMs": 5000,
         "enableWordTimestamps": False,

@@ -2,6 +2,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   AlignLeft,
   Check,
+  CircleHelp,
   CirclePause,
   Copy,
   Download,
@@ -24,6 +25,7 @@ import {
 } from "lucide-react";
 import {
   startTransition,
+  useCallback,
   useDeferredValue,
   useEffect,
   useRef,
@@ -63,9 +65,10 @@ const INPUT_GAIN_DIAL_SWEEP_DEG = 270;
 const SIDEBAR_MIN_WIDTH = 240;
 const SIDEBAR_MAX_WIDTH = 520;
 const MINUTES_PANE_MIN_WIDTH = 280;
-const TRANSCRIPT_GRID_CLASS =
-  "lg:grid lg:grid-cols-[88px_132px_minmax(0,1fr)_minmax(0,1fr)] lg:gap-4";
+const SETTINGS_AUTOSAVE_DELAY_MS = 450;
+const TRANSCRIPT_COLUMN_GAP_PX = 16;
 const LLM_MODEL_OPTIONS = ["gemma4:e2b", "gemma4:e4b"];
+const DEVICE_ID_STORAGE_KEY = "voice2text.device-id";
 
 const LANGUAGE_LABELS: Record<string, string> = {
   ja: "Japanese",
@@ -82,6 +85,106 @@ const BATCH_ENGINE_LABELS: Record<string, string> = {
   "faster-whisper": "Faster Whisper",
   moonshine: "Moonshine",
 };
+const DEFAULT_FASTER_WHISPER_MODEL = "small";
+const DEFAULT_MOONSHINE_BATCH_MODEL = "base";
+const DEFAULT_BATCH_TRANSCRIPTION_ENGINE = "faster-whisper";
+const FALLBACK_FASTER_WHISPER_MODELS = [
+  DEFAULT_FASTER_WHISPER_MODEL,
+  "tiny",
+  "base",
+  "medium",
+  "large-v3",
+];
+const DEFAULT_TRANSCRIPT_COLUMN_WIDTHS = {
+  speaker: 112,
+  time: 132,
+  transcript: 520,
+  llm: 360,
+} as const;
+const MIN_TRANSCRIPT_COLUMN_WIDTHS = {
+  speaker: 84,
+  time: 112,
+  transcript: 260,
+  llm: 220,
+} as const;
+
+type TranscriptColumnKey = "speaker" | "time" | "transcript" | "llm";
+type TranscriptColumnWidths = Record<TranscriptColumnKey, number>;
+
+type SettingsHelpTopic =
+  | "transcription"
+  | "batch"
+  | "batchModel"
+  | "localLlm"
+  | "providers";
+
+const SETTINGS_HELP_TITLES: Record<SettingsHelpTopic, string> = {
+  transcription: "文字起こし設定",
+  batch: "BATCH",
+  batchModel: "Batch Model",
+  localLlm: "Local LLM",
+  providers: "AI Providers",
+};
+
+const FASTER_WHISPER_MODEL_ROWS = [
+  {
+    model: "tiny",
+    speed: "最速",
+    accuracy: "低",
+    description: "短い確認や動作テスト向け。精度より速度を優先します。",
+  },
+  {
+    model: "base",
+    speed: "高速",
+    accuracy: "標準",
+    description: "軽めの録音に向いたバランス型です。",
+  },
+  {
+    model: "small",
+    speed: "中速",
+    accuracy: "高",
+    description: "既定モデル。日本語の精度と処理時間のバランスを重視します。",
+  },
+  {
+    model: "medium",
+    speed: "低速",
+    accuracy: "より高い",
+    description: "長めの会話や精度比較向けです。",
+  },
+  {
+    model: "large-v3",
+    speed: "最も低速",
+    accuracy: "最高",
+    description: "品質検証向け。処理時間とメモリ使用量が大きくなります。",
+  },
+];
+
+const MOONSHINE_MODEL_ROWS = [
+  {
+    model: "tiny",
+    speed: "高速",
+    accuracy: "低",
+    description: "リアルタイム軽量処理向けです。",
+  },
+  {
+    model: "base",
+    speed: "中速",
+    accuracy: "標準",
+    description: "現在のMoonshine比較用の基準モデルです。",
+  },
+  {
+    model: "small-streaming",
+    speed: "低速",
+    accuracy: "高",
+    description: "ストリーミング向けの高精度候補です。",
+  },
+  {
+    model: "medium-streaming",
+    speed: "最も低速",
+    accuracy: "より高い",
+    description: "精度比較用。負荷は高めです。",
+  },
+];
 
 const STATUS_LABELS: Record<RecordingStatus, string> = {
   idle: "Ready",
@@ -112,6 +215,122 @@ interface SidebarContextMenuState {
   recordId: string;
   x: number;
   y: number;
+}
+
+function SettingsHelpContent({ topic }: { topic: SettingsHelpTopic }) {
+  if (topic === "batchModel") {
+    return (
+      <div className="space-y-5">
+        <p className="text-sm leading-7 text-slate-600">
+          `文字起こし整形` ボタンで録音済み音声を一括処理するときのモデルです。
+          Faster Whisper はローカルの AppData 配下に保存され、OneDrive 配下には置きません。
+        </p>
+        <div className="overflow-hidden rounded-xl border border-slate-200">
+          <table className="w-full border-collapse text-left text-sm">
+            <thead className="bg-slate-50 text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">
+              <tr>
+                <th className="px-3 py-2">Faster Whisper</th>
+                <th className="px-3 py-2">速さ</th>
+                <th className="px-3 py-2">精度</th>
+                <th className="px-3 py-2">説明</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {FASTER_WHISPER_MODEL_ROWS.map((row) => (
+                <tr key={row.model}>
+                  <td className="px-3 py-2 font-semibold text-slate-900">
+                    {row.model}
+                  </td>
+                  <td className="px-3 py-2 text-slate-600">{row.speed}</td>
+                  <td className="px-3 py-2 text-slate-600">{row.accuracy}</td>
+                  <td className="px-3 py-2 text-slate-600">{row.description}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="overflow-hidden rounded-xl border border-slate-200">
+          <table className="w-full border-collapse text-left text-sm">
+            <thead className="bg-slate-50 text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">
+              <tr>
+                <th className="px-3 py-2">Moonshine</th>
+                <th className="px-3 py-2">速さ</th>
+                <th className="px-3 py-2">精度</th>
+                <th className="px-3 py-2">説明</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {MOONSHINE_MODEL_ROWS.map((row) => (
+                <tr key={row.model}>
+                  <td className="px-3 py-2 font-semibold text-slate-900">
+                    {row.model}
+                  </td>
+                  <td className="px-3 py-2 text-slate-600">{row.speed}</td>
+                  <td className="px-3 py-2 text-slate-600">{row.accuracy}</td>
+                  <td className="px-3 py-2 text-slate-600">{row.description}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  }
+
+  if (topic === "batch") {
+    return (
+      <div className="space-y-3 text-sm leading-7 text-slate-600">
+        <p>
+          BATCH は録音停止後に表示される `文字起こし整形` ボタンで使う
+          一括処理の設定です。
+        </p>
+        <p>
+          ENGINEERING では一括文字起こしのエンジンを選びます。既定は
+          Faster Whisper です。MODEL では、そのエンジンで使うモデルサイズを選びます。
+        </p>
+      </div>
+    );
+  }
+
+  if (topic === "transcription") {
+    return (
+      <div className="space-y-3 text-sm leading-7 text-slate-600">
+        <p>
+          文字起こしはリアルタイム録音中に使う設定です。言語は認識対象の言語、
+          Moonshine Model はリアルタイム処理で使うMoonshineモデルを表します。
+        </p>
+        <p>
+          BATCH の設定とは別です。BATCH は録音停止後の `文字起こし整形`
+          で使います。
+        </p>
+      </div>
+    );
+  }
+
+  if (topic === "localLlm") {
+    return (
+      <div className="space-y-3 text-sm leading-7 text-slate-600">
+        <p>
+          Local LLM はOllamaで動くGemmaを使い、リアルタイムの `LLM Refined`
+          列や一括整形後のミニッツ生成を補助します。
+        </p>
+        <p>
+          `Enable refinement` をONにすると、Moonshineの文字起こしとは別列に
+          LLM整形結果を表示します。
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3 text-sm leading-7 text-slate-600">
+      <p>
+        AI Providers は外部AIサービス用の設定欄です。現在のローカルGemma/Ollama
+        処理とは別に、将来の比較や拡張用として保持しています。
+      </p>
+      <p>通常のローカル利用では空欄のままで問題ありません。</p>
+    </div>
+  );
 }
 
 function buildSocketUrl() {
@@ -302,6 +521,41 @@ function normalizeSpeakerName(value: string, fallback: string) {
   return normalized || fallback;
 }
 
+function normalizeBatchSettings(
+  settings: AppSettings,
+  fasterWhisperModels: string[] = FALLBACK_FASTER_WHISPER_MODELS,
+  moonshineModels: string[] = [],
+): AppSettings {
+  const engine =
+    settings.transcription.batchTranscriptionEngine === "moonshine"
+      ? "moonshine"
+      : DEFAULT_BATCH_TRANSCRIPTION_ENGINE;
+  const fasterModel = fasterWhisperModels.includes(
+    settings.transcription.fasterWhisperModel,
+  )
+    ? settings.transcription.fasterWhisperModel
+    : DEFAULT_FASTER_WHISPER_MODEL;
+  const moonshineFallback =
+    moonshineModels.includes(DEFAULT_MOONSHINE_BATCH_MODEL)
+      ? DEFAULT_MOONSHINE_BATCH_MODEL
+      : moonshineModels[0] || DEFAULT_MOONSHINE_BATCH_MODEL;
+  const moonshineModel = moonshineModels.includes(
+    settings.transcription.batchMoonshineModelPreset,
+  )
+    ? settings.transcription.batchMoonshineModelPreset
+    : moonshineFallback;
+
+  return {
+    ...settings,
+    transcription: {
+      ...settings.transcription,
+      batchTranscriptionEngine: engine as "faster-whisper" | "moonshine",
+      fasterWhisperModel: fasterModel,
+      batchMoonshineModelPreset: moonshineModel,
+    },
+  };
+}
+
 function clampUpdateInterval(value: number) {
   return Math.min(MAX_UPDATE_INTERVAL_MS, Math.max(MIN_UPDATE_INTERVAL_MS, value));
 }
@@ -482,7 +736,11 @@ function App() {
   >("realtime");
   const [showLlmRefined, setShowLlmRefined] = useState(true);
   const [currentAudioUrl, setCurrentAudioUrl] = useState<string | null>(null);
-  const [deviceId, setDeviceId] = useState("");
+  const [deviceId, setDeviceId] = useState(() =>
+    typeof window === "undefined"
+      ? ""
+      : window.localStorage.getItem(DEVICE_ID_STORAGE_KEY) ?? "",
+  );
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [status, setStatus] = useState<RecordingStatus>("idle");
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
@@ -509,6 +767,16 @@ function App() {
   );
   const [recordsOpen, setRecordsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsHelpTopic, setSettingsHelpTopic] =
+    useState<SettingsHelpTopic | null>(null);
+  const [transcriptColumnWidths, setTranscriptColumnWidths] =
+    useState<TranscriptColumnWidths>({
+      ...DEFAULT_TRANSCRIPT_COLUMN_WIDTHS,
+    });
+  const [playbackActiveSegmentId, setPlaybackActiveSegmentId] = useState<
+    string | null
+  >(null);
+  const [isAudioPlaying, setIsAudioPlaying] = useState(false);
   const [liveSessionStartedAt, setLiveSessionStartedAt] = useState<string | null>(
     null,
   );
@@ -545,6 +813,13 @@ function App() {
   const statusRef = useRef<RecordingStatus>("idle");
   const isLiveSessionRef = useRef(false);
   const pendingLiveTitleRef = useRef<string | null>(null);
+  const settingsAutoSaveTimeoutRef = useRef<number | null>(null);
+  const lastSavedSettingsSnapshotRef = useRef<string | null>(null);
+  const transcriptColumnResizeRef = useRef<{
+    column: TranscriptColumnKey;
+    startX: number;
+    startWidth: number;
+  } | null>(null);
   const bootstrapApplicationRef = useRef<() => Promise<void>>(async () => {});
   const refreshDevicesRef = useRef<() => Promise<void>>(async () => {});
   const teardownAudioRef = useRef<() => Promise<void>>(async () => {});
@@ -562,6 +837,9 @@ function App() {
     () => () => {
       if (minutesSaveTimeoutRef.current !== null) {
         window.clearTimeout(minutesSaveTimeoutRef.current);
+      }
+      if (settingsAutoSaveTimeoutRef.current !== null) {
+        window.clearTimeout(settingsAutoSaveTimeoutRef.current);
       }
     },
     [],
@@ -586,6 +864,13 @@ function App() {
     );
   }, [inputGainDb]);
 
+  useEffect(() => {
+    if (typeof window === "undefined" || !deviceId) {
+      return;
+    }
+    window.localStorage.setItem(DEVICE_ID_STORAGE_KEY, deviceId);
+  }, [deviceId]);
+
   const refreshDevices = async () => {
     if (!navigator.mediaDevices?.enumerateDevices) {
       return;
@@ -596,8 +881,38 @@ function App() {
       (device) => device.kind === "audioinput",
     );
     setDevices(audioInputs);
-    setDeviceId((current) => current || audioInputs[0]?.deviceId || "");
+    setDeviceId((current) =>
+      audioInputs.some((device) => device.deviceId === current)
+        ? current
+        : audioInputs[0]?.deviceId || "",
+    );
   };
+
+  const normalizeSettingsForPersistence = useCallback(
+    (settings: AppSettings, metaOverride?: MetaResponse | null) => {
+      const effectiveMeta = metaOverride ?? meta;
+      const fasterWhisperModels =
+        effectiveMeta?.fasterWhisperModels ?? FALLBACK_FASTER_WHISPER_MODELS;
+      const moonshineModels =
+        effectiveMeta?.availableModelsByLanguage[settings.transcription.language] ??
+        (effectiveMeta
+          ? effectiveMeta.availableModelsByLanguage[effectiveMeta.defaultLanguage]
+          : undefined) ??
+        ["tiny"];
+      return normalizeBatchSettings(
+        settings,
+        fasterWhisperModels,
+        moonshineModels,
+      );
+    },
+    [meta],
+  );
+
+  const getSettingsSnapshot = useCallback(
+    (settings: AppSettings, metaOverride?: MetaResponse | null) =>
+      JSON.stringify(normalizeSettingsForPersistence(settings, metaOverride)),
+    [normalizeSettingsForPersistence],
+  );
 
   const refreshHistory = async () => {
     const sessions = await apiFetch<SessionSummary[]>("/api/sessions");
@@ -722,12 +1037,26 @@ function App() {
         apiFetch<SessionSummary[]>("/api/sessions"),
       ]);
 
+      const normalizedSettings = normalizeBatchSettings(
+        settingsPayload.settings,
+        metaPayload.fasterWhisperModels,
+        metaPayload.availableModelsByLanguage[
+          settingsPayload.settings.transcription.language
+        ] ??
+          metaPayload.availableModelsByLanguage[metaPayload.defaultLanguage] ??
+          ["tiny"],
+      );
+      lastSavedSettingsSnapshotRef.current = JSON.stringify(normalizedSettings);
+
       clearBootstrapRetry();
       setError(null);
-      setSettingsResponse(settingsPayload);
-      setDraftSettings(settingsPayload.settings);
+      setSettingsResponse({
+        ...settingsPayload,
+        settings: normalizedSettings,
+      });
+      setDraftSettings(normalizedSettings);
       setUpdateIntervalDraft(
-        String(settingsPayload.settings.transcription.updateIntervalMs),
+        String(normalizedSettings.transcription.updateIntervalMs),
       );
       speakerNameOverridesRef.current.clear();
       setMeta(metaPayload);
@@ -1168,39 +1497,81 @@ function App() {
     await teardownAudio();
   };
 
-  const saveSettings = async (nextSettings?: AppSettings | null) => {
-    const settingsToSave = nextSettings ?? draftSettings;
-    if (!settingsToSave) {
-      return;
-    }
-    setSavingSettings(true);
-    try {
-      const response = await apiFetch<SettingsResponse>("/api/settings", {
-        method: "PUT",
-        body: JSON.stringify(settingsToSave),
-      });
-      setSettingsResponse(response);
-      setDraftSettings(response.settings);
-      setUpdateIntervalDraft(String(response.settings.transcription.updateIntervalMs));
-      setMeta(await apiFetch<MetaResponse>("/api/meta"));
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(
-          JSON.stringify({
-            type: "update_llm_settings",
-            payload: response.settings.llm,
-          }),
-        );
+  const saveSettings = useCallback(
+    async (
+      nextSettings?: AppSettings | null,
+      options?: { closePanelOnSuccess?: boolean },
+    ) => {
+      const rawSettings = nextSettings ?? draftSettings;
+      if (!rawSettings) {
+        if (options?.closePanelOnSuccess) {
+          setSettingsOpen(false);
+        }
+        return;
       }
-    } catch (saveError) {
-      setError(
-        saveError instanceof Error
-          ? saveError.message
-          : "Failed to save settings.",
-      );
-    } finally {
-      setSavingSettings(false);
-    }
-  };
+
+      const settingsToSave = normalizeSettingsForPersistence(rawSettings);
+      const nextSnapshot = JSON.stringify(settingsToSave);
+      if (nextSnapshot === lastSavedSettingsSnapshotRef.current) {
+        setDraftSettings(settingsToSave);
+        if (options?.closePanelOnSuccess) {
+          setSettingsOpen(false);
+        }
+        return;
+      }
+
+      if (settingsAutoSaveTimeoutRef.current !== null) {
+        window.clearTimeout(settingsAutoSaveTimeoutRef.current);
+        settingsAutoSaveTimeoutRef.current = null;
+      }
+
+      setDraftSettings(settingsToSave);
+      setSavingSettings(true);
+      try {
+        const response = await apiFetch<SettingsResponse>("/api/settings", {
+          method: "PUT",
+          body: JSON.stringify(settingsToSave),
+        });
+        const nextMeta = await apiFetch<MetaResponse>("/api/meta");
+        const normalizedResponseSettings = normalizeSettingsForPersistence(
+          response.settings,
+          nextMeta,
+        );
+        lastSavedSettingsSnapshotRef.current = JSON.stringify(
+          normalizedResponseSettings,
+        );
+        setSettingsResponse({
+          ...response,
+          settings: normalizedResponseSettings,
+        });
+        setDraftSettings(normalizedResponseSettings);
+        setUpdateIntervalDraft(
+          String(normalizedResponseSettings.transcription.updateIntervalMs),
+        );
+        setMeta(nextMeta);
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send(
+            JSON.stringify({
+              type: "update_llm_settings",
+              payload: normalizedResponseSettings.llm,
+            }),
+          );
+        }
+        if (options?.closePanelOnSuccess) {
+          setSettingsOpen(false);
+        }
+      } catch (saveError) {
+        setError(
+          saveError instanceof Error
+            ? saveError.message
+            : "Failed to save settings.",
+        );
+      } finally {
+        setSavingSettings(false);
+      }
+    },
+    [draftSettings, normalizeSettingsForPersistence],
+  );
 
   const chooseRecordingsRoot = async () => {
     const baseSettings = settingsResponse?.settings ?? draftSettings;
@@ -1491,16 +1862,54 @@ function App() {
     setEditVersion((version) => version + 1);
   };
 
-  const playSegmentAudio = async (startedAt: number) => {
+  const findPlaybackSegmentId = useCallback((currentTime: number) => {
+    const segments = timelineSegmentsRef.current;
+    if (segments.length === 0) {
+      return null;
+    }
+
+    for (let index = 0; index < segments.length; index += 1) {
+      const segment = segments[index];
+      const nextSegment = segments[index + 1];
+      const segmentEnd =
+        nextSegment?.startedAt ??
+        segment.startedAt + Math.max(segment.duration, 2);
+      if (currentTime >= segment.startedAt && currentTime < segmentEnd) {
+        return segment.id;
+      }
+    }
+
+    if (currentTime >= segments.at(-1)!.startedAt) {
+      return segments.at(-1)!.id;
+    }
+    return null;
+  }, []);
+
+  const playSegmentAudio = async (segment: TranscriptSegment) => {
     const audio = audioPlayerRef.current;
     if (!audio || !currentAudioUrl || status !== "idle") {
       return;
     }
 
-    const nextTime = Math.max(0, startedAt - SEGMENT_AUDIO_PREROLL_SECONDS);
+    if (isAudioPlaying && playbackActiveSegmentId === segment.id) {
+      audio.pause();
+      audio.currentTime = Math.max(
+        0,
+        segment.startedAt - SEGMENT_AUDIO_PREROLL_SECONDS,
+      );
+      setIsAudioPlaying(false);
+      setPlaybackActiveSegmentId(null);
+      return;
+    }
+
+    const nextTime = Math.max(
+      0,
+      segment.startedAt - SEGMENT_AUDIO_PREROLL_SECONDS,
+    );
     try {
       audio.pause();
       audio.currentTime = nextTime;
+      setPlaybackActiveSegmentId(segment.id);
       await audio.play();
     } catch (playError) {
       setError(
@@ -1510,6 +1919,48 @@ function App() {
       );
     }
   };
+
+  useEffect(() => {
+    const audio = audioPlayerRef.current;
+    if (!audio) {
+      return;
+    }
+
+    const syncPlaybackSegment = () => {
+      const nextSegmentId = findPlaybackSegmentId(audio.currentTime);
+      setPlaybackActiveSegmentId(nextSegmentId);
+    };
+    const handlePlay = () => {
+      setIsAudioPlaying(true);
+      syncPlaybackSegment();
+    };
+    const handlePause = () => {
+      setIsAudioPlaying(false);
+      setPlaybackActiveSegmentId(null);
+    };
+    const handleEnded = () => {
+      setIsAudioPlaying(false);
+      setPlaybackActiveSegmentId(null);
+    };
+
+    audio.addEventListener("play", handlePlay);
+    audio.addEventListener("pause", handlePause);
+    audio.addEventListener("ended", handleEnded);
+    audio.addEventListener("timeupdate", syncPlaybackSegment);
+    audio.addEventListener("seeked", syncPlaybackSegment);
+    return () => {
+      audio.removeEventListener("play", handlePlay);
+      audio.removeEventListener("pause", handlePause);
+      audio.removeEventListener("ended", handleEnded);
+      audio.removeEventListener("timeupdate", syncPlaybackSegment);
+      audio.removeEventListener("seeked", syncPlaybackSegment);
+    };
+  }, [findPlaybackSegmentId, currentAudioUrl]);
+
+  useEffect(() => {
+    setIsAudioPlaying(false);
+    setPlaybackActiveSegmentId(null);
+  }, [currentAudioUrl, selectedSessionId]);
 
   const openRecordingInExplorer = async (sessionId: string) => {
     setOpeningRecordingId(sessionId);
@@ -1541,9 +1992,119 @@ function App() {
     setDraftSettings((current) => (current ? updater(current) : current));
   };
 
+  const closeSettingsPanel = useCallback(() => {
+    setSettingsOpen(false);
+    if (!draftSettings || savingSettings) {
+      return;
+    }
+    const nextSnapshot = getSettingsSnapshot(draftSettings);
+    if (nextSnapshot !== lastSavedSettingsSnapshotRef.current) {
+      void saveSettings(draftSettings);
+    }
+  }, [draftSettings, getSettingsSnapshot, saveSettings, savingSettings]);
+
+  const saveSettingsAndClose = useCallback(() => {
+    void saveSettings(draftSettings, { closePanelOnSuccess: true });
+  }, [draftSettings, saveSettings]);
+
+  useEffect(() => {
+    if (!draftSettings || !meta || savingSettings) {
+      return;
+    }
+
+    const nextSnapshot = getSettingsSnapshot(draftSettings);
+    if (nextSnapshot === lastSavedSettingsSnapshotRef.current) {
+      return;
+    }
+
+    if (settingsAutoSaveTimeoutRef.current !== null) {
+      window.clearTimeout(settingsAutoSaveTimeoutRef.current);
+    }
+
+    settingsAutoSaveTimeoutRef.current = window.setTimeout(() => {
+      settingsAutoSaveTimeoutRef.current = null;
+      void saveSettings(draftSettings);
+    }, SETTINGS_AUTOSAVE_DELAY_MS);
+
+    return () => {
+      if (settingsAutoSaveTimeoutRef.current !== null) {
+        window.clearTimeout(settingsAutoSaveTimeoutRef.current);
+        settingsAutoSaveTimeoutRef.current = null;
+      }
+    };
+  }, [draftSettings, getSettingsSnapshot, meta, saveSettings, savingSettings]);
+
   const activeModelOptions =
     meta?.availableModelsByLanguage[draftSettings?.transcription.language ?? "ja"] ??
     ["tiny"];
+  const visibleTranscriptColumns: TranscriptColumnKey[] = showLlmRefined
+    ? ["speaker", "time", "transcript", "llm"]
+    : ["speaker", "time", "transcript"];
+  const transcriptGridTemplate = visibleTranscriptColumns
+    .map((column) => `${transcriptColumnWidths[column]}px`)
+    .join(" ");
+  const transcriptTableMinWidth =
+    visibleTranscriptColumns.reduce(
+      (total, column) => total + transcriptColumnWidths[column],
+      0,
+    ) +
+    Math.max(0, visibleTranscriptColumns.length - 1) * TRANSCRIPT_COLUMN_GAP_PX;
+  const transcriptGridStyle = {
+    gridTemplateColumns: transcriptGridTemplate,
+  };
+
+  const updateTranscriptColumnWidthFromPointer = useCallback((clientX: number) => {
+    const resizeState = transcriptColumnResizeRef.current;
+    if (!resizeState) {
+      return;
+    }
+
+    const delta = clientX - resizeState.startX;
+    setTranscriptColumnWidths((current) => ({
+      ...current,
+      [resizeState.column]: clampNumber(
+        resizeState.startWidth + delta,
+        MIN_TRANSCRIPT_COLUMN_WIDTHS[resizeState.column],
+        1200,
+      ),
+    }));
+  }, []);
+
+  const handleTranscriptColumnResizePointerDown = useCallback(
+    (
+      column: TranscriptColumnKey,
+      event: ReactPointerEvent<HTMLButtonElement>,
+    ) => {
+      event.preventDefault();
+      event.stopPropagation();
+      transcriptColumnResizeRef.current = {
+        column,
+        startX: event.clientX,
+        startWidth: transcriptColumnWidths[column],
+      };
+      event.currentTarget.setPointerCapture(event.pointerId);
+    },
+    [transcriptColumnWidths],
+  );
+
+  const handleTranscriptColumnResizePointerMove = (
+    event: ReactPointerEvent<HTMLButtonElement>,
+  ) => {
+    if (!event.currentTarget.hasPointerCapture(event.pointerId)) {
+      return;
+    }
+    updateTranscriptColumnWidthFromPointer(event.clientX);
+  };
+
+  const handleTranscriptColumnResizePointerUp = (
+    event: ReactPointerEvent<HTMLButtonElement>,
+  ) => {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    transcriptColumnResizeRef.current = null;
+  };
+
   const appReady = Boolean(draftSettings && meta);
   const hasActiveCapture = status !== "idle" && status !== "error";
   const generatedLiveTitle = formatSessionTitle(liveSessionStartedAt);
@@ -1595,9 +2156,6 @@ function App() {
   const canDeleteSelectedSession = Boolean(selectedSessionId && !hasActiveCapture);
   const activeTitle = activeRecord?.title ?? "Voice2Text Workspace";
   const renderedMinutesHtml = renderMarkdown(minutesDraft);
-  const transcriptGridClass = showLlmRefined
-    ? TRANSCRIPT_GRID_CLASS
-    : "lg:grid lg:grid-cols-[88px_132px_minmax(0,1fr)] lg:gap-4";
   const inputGainDialAngle = gainDbToDialAngle(inputGainDb);
   const inputGainSweepDegrees =
     ((inputGainDb - INPUT_GAIN_MIN_DB) /
@@ -2097,7 +2655,7 @@ function App() {
                         type="button"
                         disabled={isDisabled}
                         onClick={() => toggleSidebarRecordSelection(record.id)}
-                        className={`mt-6 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md border transition-colors ${
+                        className={`mt-5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md border transition-colors ${
                           isBulkSelected
                             ? "border-[#007aff] bg-[#007aff] text-white"
                             : "border-slate-200 bg-white text-transparent hover:border-slate-300 hover:text-slate-300"
@@ -2121,29 +2679,20 @@ function App() {
                           : "hover:text-slate-950 active:text-slate-950"
                       }`}
                     >
-                      <div className="mb-1 flex items-center gap-3">
+                      <div className="mb-1 flex items-center justify-between gap-3">
                         <span
-                          className={`app-mono inline-flex rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-[0.18em] ${badgeClass}`}
+                          className={`app-mono inline-flex shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-[0.18em] ${badgeClass}`}
                         >
                           {record.badgeLabel}
                         </span>
+                        <span className="app-mono shrink-0 text-[10px] tracking-[0.12em] text-slate-400">
+                          {formatSidebarDate(record.createdAt)}
+                        </span>
                       </div>
-                      <h3 className="truncate text-sm font-semibold text-slate-900">
+                      <h3 className="break-words text-sm font-semibold leading-5 text-slate-900">
                         {record.title}
                       </h3>
                     </button>
-                    <div className="flex shrink-0 flex-col items-end gap-1">
-                      <span className="app-mono text-[10px] tracking-[0.12em] text-slate-400">
-                        {formatSidebarDate(record.createdAt)}
-                      </span>
-                      {isBulkSelected ? (
-                        <span className="app-mono text-[10px] tracking-[0.12em] text-[#007aff]">
-                          Selected
-                        </span>
-                      ) : (
-                        <div aria-hidden className="h-[14px]" />
-                      )}
-                    </div>
                   </div>
                 </div>
               );
@@ -2275,7 +2824,7 @@ function App() {
                 <button
                   type="button"
                   onClick={() => setActiveTranscriptView("realtime")}
-                  className={`inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-sm font-semibold transition-colors ${
+                  className={`inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[11px] font-semibold transition-colors ${
                     activeTranscriptView === "realtime"
                       ? "bg-[#007aff] text-white"
                       : "text-[#007aff] hover:bg-[#007aff]/10"
@@ -2287,7 +2836,7 @@ function App() {
                 <button
                   type="button"
                   onClick={() => setActiveTranscriptView("minutes")}
-                  className={`inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-sm font-semibold transition-colors ${
+                  className={`inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[11px] font-semibold transition-colors ${
                     activeTranscriptView === "minutes"
                       ? "bg-[#007aff] text-white"
                       : "text-[#007aff] hover:bg-[#007aff]/10"
@@ -2351,12 +2900,12 @@ function App() {
 
         <div
           ref={transcriptScrollRef}
-          className="app-scrollbar flex-1 overflow-y-auto px-4 py-6 sm:px-6 lg:px-8"
+          className="app-scrollbar flex-1 overflow-auto px-4 pb-6 pt-0 sm:px-6 lg:px-8"
         >
           {activeTranscriptView === "minutes" ? (
             <div
               ref={minutesSplitRef}
-              className="mx-auto flex w-full max-w-[1380px] flex-col overflow-hidden pb-10 lg:min-h-[calc(100vh-12rem)] lg:flex-row"
+              className="mx-auto flex w-full max-w-[1380px] flex-col overflow-hidden pb-10 pt-6 lg:min-h-[calc(100vh-12rem)] lg:flex-row"
             >
               <section
                 className="flex min-h-[26rem] min-w-0 flex-col bg-white lg:min-h-0"
@@ -2414,179 +2963,251 @@ function App() {
             </div>
           ) : (
           <div className="mx-auto w-full max-w-[1380px] pb-10">
-            <div
-              className={`hidden border-b border-slate-200 pb-3 text-[10px] font-bold uppercase tracking-[0.24em] text-slate-400 ${transcriptGridClass}`}
-            >
-              <div>Speaker</div>
-              <div>Time</div>
-              <div className="flex items-center gap-2">
-                <span>Transcript Text</span>
-                {!showLlmRefined ? (
-                  <button
-                    type="button"
-                    onClick={() => setShowLlmRefined(true)}
-                    className="rounded-full border border-[#007aff] px-2 py-0.5 text-[10px] font-bold text-[#007aff]"
-                    aria-label="Show LLM Refined column"
-                  >
-                    LLM
-                  </button>
-                ) : null}
-              </div>
-              {showLlmRefined ? (
-                <div className="flex items-center gap-2">
-                  <span>LLM Refined</span>
-                  <button
-                    type="button"
-                    onClick={() => setShowLlmRefined((current) => !current)}
-                    className="relative h-4 w-7 rounded-full bg-[#007aff]"
-                    aria-label="Hide LLM Refined column"
-                  >
-                    <span className="absolute right-0.5 top-0.5 h-3 w-3 rounded-full bg-white" />
-                  </button>
-                </div>
-              ) : null}
-            </div>
-
-            <div>
-              <AnimatePresence initial={false}>
-                {deferredSegments.length === 0 ? (
-                  <motion.div
-                    initial={{ opacity: 0, y: 16 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -10 }}
-                    className="py-14 text-center text-sm leading-7 text-slate-500"
-                  >
-                    The transcript will appear here once a live capture starts or an
-                    existing record is opened.
-                  </motion.div>
-                ) : (
-                  deferredSegments.map((segment) => (
-                    <motion.article
-                      key={segment.id}
-                      ref={(node) => {
-                        if (node) {
-                          segmentRowRefs.current.set(segment.id, node);
-                        } else {
-                          segmentRowRefs.current.delete(segment.id);
-                        }
-                      }}
-                      layout
-                      initial={{ opacity: 0, y: 8 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -8 }}
-                      transition={{ duration: 0.18, ease: "easeOut" }}
-                      className={`border-b border-slate-100 py-1.5 ${transcriptGridClass}`}
+              <div className="min-w-full" style={{ minWidth: `${transcriptTableMinWidth}px` }}>
+                <div
+                  className="sticky top-0 z-30 hidden border-b border-slate-200 bg-white px-0 py-4 text-[10px] font-bold uppercase tracking-[0.24em] text-slate-400 shadow-[0_1px_0_rgba(226,232,240,1)] lg:grid lg:gap-4"
+                  style={transcriptGridStyle}
+                >
+                  <div className="relative min-w-0 pr-3">
+                    <span>話者</span>
+                    <button
+                      type="button"
+                      onPointerDown={(event) =>
+                        handleTranscriptColumnResizePointerDown("speaker", event)
+                      }
+                      onPointerMove={handleTranscriptColumnResizePointerMove}
+                      onPointerUp={handleTranscriptColumnResizePointerUp}
+                      onPointerCancel={handleTranscriptColumnResizePointerUp}
+                      className="group absolute -right-2 top-0 h-full w-4 cursor-col-resize touch-none"
+                      aria-label="話者列の幅を変更"
                     >
-                      <div className="flex items-center justify-between gap-2 lg:block">
-                        <div className="flex items-center gap-1">
-                          <p
-                            className="truncate text-[11px] font-semibold text-slate-900"
-                            title={segment.speakerLabel}
+                      <span className="absolute left-1/2 top-0 h-full w-px -translate-x-1/2 bg-slate-200 transition-colors group-hover:bg-[#007aff] group-active:bg-[#007aff]" />
+                    </button>
+                  </div>
+                  <div className="relative min-w-0 pr-3">
+                    <span>時刻</span>
+                    <button
+                      type="button"
+                      onPointerDown={(event) =>
+                        handleTranscriptColumnResizePointerDown("time", event)
+                      }
+                      onPointerMove={handleTranscriptColumnResizePointerMove}
+                      onPointerUp={handleTranscriptColumnResizePointerUp}
+                      onPointerCancel={handleTranscriptColumnResizePointerUp}
+                      className="group absolute -right-2 top-0 h-full w-4 cursor-col-resize touch-none"
+                      aria-label="時刻列の幅を変更"
+                    >
+                      <span className="absolute left-1/2 top-0 h-full w-px -translate-x-1/2 bg-slate-200 transition-colors group-hover:bg-[#007aff] group-active:bg-[#007aff]" />
+                    </button>
+                  </div>
+                  <div className="relative min-w-0 pr-3">
+                    <div className="flex items-center gap-2">
+                      <span>文字起こし</span>
+                      {!showLlmRefined ? (
+                        <button
+                          type="button"
+                          onClick={() => setShowLlmRefined(true)}
+                          className="rounded-full border border-[#007aff] px-2 py-0.5 text-[10px] font-bold text-[#007aff]"
+                          aria-label="LLM整形列を表示"
+                        >
+                          整形列
+                        </button>
+                      ) : null}
+                    </div>
+                    {showLlmRefined ? (
+                      <button
+                        type="button"
+                        onPointerDown={(event) =>
+                          handleTranscriptColumnResizePointerDown("transcript", event)
+                        }
+                        onPointerMove={handleTranscriptColumnResizePointerMove}
+                        onPointerUp={handleTranscriptColumnResizePointerUp}
+                        onPointerCancel={handleTranscriptColumnResizePointerUp}
+                        className="group absolute -right-2 top-0 h-full w-4 cursor-col-resize touch-none"
+                        aria-label="文字起こし列の幅を変更"
+                      >
+                        <span className="absolute left-1/2 top-0 h-full w-px -translate-x-1/2 bg-slate-200 transition-colors group-hover:bg-[#007aff] group-active:bg-[#007aff]" />
+                      </button>
+                    ) : null}
+                  </div>
+                  {showLlmRefined ? (
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span>LLM整形</span>
+                        <button
+                          type="button"
+                          onClick={() => setShowLlmRefined((current) => !current)}
+                          className="relative h-4 w-7 rounded-full bg-[#007aff]"
+                          aria-label="LLM整形列を非表示"
+                        >
+                          <span className="absolute right-0.5 top-0.5 h-3 w-3 rounded-full bg-white" />
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+
+                <div>
+                  <AnimatePresence initial={false}>
+                    {deferredSegments.length === 0 ? (
+                      <motion.div
+                        initial={{ opacity: 0, y: 16 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -10 }}
+                        className="py-14 text-center text-sm leading-7 text-slate-500"
+                      >
+                        The transcript will appear here once a live capture starts or an
+                        existing record is opened.
+                      </motion.div>
+                    ) : (
+                      deferredSegments.map((segment) => {
+                        const isPlaybackActive = playbackActiveSegmentId === segment.id;
+                        const isPlaybackButtonActive =
+                          isAudioPlaying && playbackActiveSegmentId === segment.id;
+                        const timePlaybackCellClass = isPlaybackActive
+                          ? "playback-cell playback-cell-active"
+                          : "playback-cell";
+
+                        return (
+                          <motion.article
+                            key={segment.id}
+                            ref={(node) => {
+                              if (node) {
+                                segmentRowRefs.current.set(segment.id, node);
+                              } else {
+                                segmentRowRefs.current.delete(segment.id);
+                              }
+                            }}
+                            layout
+                            initial={{ opacity: 0, y: 8 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0, y: -8 }}
+                            transition={{ duration: 0.18, ease: "easeOut" }}
+                            className="border-b border-slate-100 py-1.5 lg:grid lg:gap-4"
+                            style={transcriptGridStyle}
                           >
-                            {segment.speakerLabel}
-                          </p>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              renameSpeaker(segment.speakerIndex, segment.speakerLabel)
-                            }
-                            className="inline-flex h-5 w-5 items-center justify-center rounded text-slate-300 transition-colors hover:bg-slate-100 hover:text-slate-500"
-                            aria-label={`Rename speaker ${segment.speakerLabel}`}
-                          >
-                            <Pencil className="size-3" />
-                          </button>
-                        </div>
-                        <span className="app-mono text-[11px] font-semibold text-slate-500 lg:hidden">
-                          {formatLongClock(segment.startedAt)}
-                        </span>
-                      </div>
-
-                      <div className="mt-1 app-mono text-[11px] text-slate-400 lg:mt-0">
-                        <div className="flex items-center gap-2">
-                          <p className="font-semibold text-slate-500">
-                            {formatLongClock(segment.startedAt)}
-                          </p>
-                          {showAudioPlayer ? (
-                            <button
-                              type="button"
-                              onClick={() => void playSegmentAudio(segment.startedAt)}
-                              className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-400 transition-colors hover:border-slate-300 hover:text-slate-600"
-                              aria-label={`Play audio near ${formatLongClock(segment.startedAt)}`}
+                            <div
+                              className="flex items-center justify-between gap-2 rounded-xl px-2 py-2 lg:block"
                             >
-                              <Play className="ml-0.5 size-3" />
-                            </button>
-                          ) : null}
-                        </div>
-                      </div>
+                              <div className="flex items-center gap-1">
+                                <p
+                                  className="truncate text-[11px] font-semibold text-slate-900"
+                                  title={segment.speakerLabel}
+                                >
+                                  {segment.speakerLabel}
+                                </p>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    renameSpeaker(segment.speakerIndex, segment.speakerLabel)
+                                  }
+                                  className="inline-flex h-5 w-5 items-center justify-center rounded text-slate-300 transition-colors hover:bg-slate-100 hover:text-slate-500"
+                                  aria-label={`${segment.speakerLabel} を変更`}
+                                >
+                                  <Pencil className="size-3" />
+                                </button>
+                              </div>
+                              <span className="app-mono text-[11px] font-semibold text-slate-500 lg:hidden">
+                                {formatLongClock(segment.startedAt)}
+                              </span>
+                            </div>
 
-                      <div className="mt-1 min-w-0 lg:mt-0">
-                        <textarea
-                          value={segment.text}
-                          rows={Math.max(
-                            1,
-                            Math.ceil(Math.max(segment.text.length, 1) / 340),
-                          )}
-                          onChange={(event) =>
-                            onSegmentEdit(segment.id, event.target.value)
-                          }
-                          className="w-full resize-none border-0 bg-transparent px-0 py-0 text-slate-900 outline-none transition focus:bg-[#f8fbff]"
-                          style={{
-                            fontSize: "11px",
-                            fontWeight: 600,
-                            lineHeight: "16px",
-                          }}
-                        />
-                      </div>
-
-                      {showLlmRefined ? (
-                        <div className="mt-2 min-w-0 rounded-lg bg-slate-50 px-3 py-2 lg:mt-0">
-                          {segment.llmStatus === "pending" ? (
-                            <p className="text-[11px] font-semibold text-slate-400">
-                              Refining with {segment.llmModel ?? "Gemma"}
-                            </p>
-                          ) : segment.llmStatus === "error" ? (
-                            <p
-                              className="text-[11px] font-semibold text-rose-500"
-                              title={segment.llmError ?? undefined}
+                            <div
+                              className={`mt-1 rounded-xl px-2 py-2 app-mono text-[11px] text-slate-400 lg:mt-0 ${timePlaybackCellClass}`}
                             >
-                              LLM refinement failed
-                            </p>
-                          ) : segment.llmText ? (
-                            <>
-                              <p
-                                className="whitespace-pre-wrap text-slate-900"
+                              <div className="flex items-center gap-2">
+                                <p className="font-semibold text-slate-500">
+                                  {formatLongClock(segment.startedAt)}
+                                </p>
+                                {showAudioPlayer ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => void playSegmentAudio(segment)}
+                                    className={`inline-flex h-6 w-6 items-center justify-center rounded-full border transition-colors ${
+                                      isPlaybackButtonActive
+                                        ? "border-[#007aff] bg-[#007aff] text-white hover:border-[#0062cc] hover:bg-[#0062cc]"
+                                        : "border-slate-200 bg-white text-slate-400 hover:border-slate-300 hover:text-slate-600"
+                                    }`}
+                                    aria-label={
+                                      isPlaybackButtonActive
+                                        ? `${formatLongClock(segment.startedAt)} の再生を停止`
+                                        : `${formatLongClock(segment.startedAt)} から再生`
+                                    }
+                                  >
+                                    {isPlaybackButtonActive ? (
+                                      <Square className="size-2.5" />
+                                    ) : (
+                                      <Play className="ml-0.5 size-3" />
+                                    )}
+                                  </button>
+                                ) : null}
+                              </div>
+                            </div>
+
+                            <div
+                              className="mt-1 min-w-0 rounded-xl px-3 py-2 lg:mt-0"
+                            >
+                              <textarea
+                                value={segment.text}
+                                rows={Math.max(
+                                  1,
+                                  Math.ceil(Math.max(segment.text.length, 1) / 340),
+                                )}
+                                onChange={(event) =>
+                                  onSegmentEdit(segment.id, event.target.value)
+                                }
+                                className="w-full resize-none border-0 bg-transparent px-0 py-0 text-slate-900 outline-none transition focus:bg-white/50"
                                 style={{
                                   fontSize: "11px",
                                   fontWeight: 600,
                                   lineHeight: "16px",
                                 }}
-                              >
-                                {segment.llmText}
-                              </p>
-                              <p className="mt-1 app-mono text-[10px] font-semibold text-slate-400">
-                                {segment.llmModel}
-                                {segment.llmLatencyMs
-                                  ? ` / ${segment.llmLatencyMs} ms`
-                                  : ""}
-                              </p>
-                            </>
-                          ) : segment.llmStatus === "complete" ? (
-                            <p className="text-[11px] font-semibold text-slate-300">
-                              Included in block above
-                            </p>
-                          ) : (
-                            <p className="text-[11px] font-semibold text-slate-300">
-                              Not refined
-                            </p>
-                          )}
-                        </div>
-                      ) : null}
-                    </motion.article>
-                  ))
-                )}
-              </AnimatePresence>
-              {hasActiveCapture ? <div aria-hidden className="h-[24vh]" /> : null}
-            </div>
+                              />
+                            </div>
+
+                            {showLlmRefined ? (
+                              <div className="mt-2 min-w-0 rounded-xl bg-slate-50 px-3 py-2 transition-all duration-300 lg:mt-0">
+                                {segment.llmStatus === "pending" ? (
+                                  <p className="text-[11px] font-semibold text-slate-400">
+                                    整形中...
+                                  </p>
+                                ) : segment.llmStatus === "error" ? (
+                                  <p
+                                    className="text-[11px] font-semibold text-rose-500"
+                                    title={segment.llmError ?? undefined}
+                                  >
+                                    整形に失敗しました
+                                  </p>
+                                ) : segment.llmText ? (
+                                  <p
+                                    className="whitespace-pre-wrap text-slate-900"
+                                    style={{
+                                      fontSize: "11px",
+                                      fontWeight: 600,
+                                      lineHeight: "16px",
+                                    }}
+                                  >
+                                    {segment.llmText}
+                                  </p>
+                                ) : segment.llmStatus === "complete" ? (
+                                  <p className="text-[11px] font-semibold text-slate-300">
+                                    上の塊に含まれています
+                                  </p>
+                                ) : (
+                                  <p className="text-[11px] font-semibold text-slate-300">
+                                    未整形
+                                  </p>
+                                )}
+                              </div>
+                            ) : null}
+                          </motion.article>
+                        );
+                      })
+                    )}
+                  </AnimatePresence>
+                  {hasActiveCapture ? <div aria-hidden className="h-[24vh]" /> : null}
+                </div>
+              </div>
           </div>
           )}
         </div>
@@ -2691,7 +3312,7 @@ function App() {
                   selectedSessionId && void generateMinutesForSession(selectedSessionId)
                 }
                 disabled={selectedMinutesProcessing}
-                className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-[#007aff] bg-white px-4 text-sm font-semibold text-[#007aff] transition-colors hover:bg-[#007aff]/10 disabled:cursor-not-allowed disabled:opacity-40"
+                className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-[#007aff] bg-white px-4 text-[11px] font-semibold text-[#007aff] transition-colors hover:bg-[#007aff]/10 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {selectedMinutesProcessing ? (
                   <LoaderCircle className="size-4 animate-spin" />
@@ -2720,7 +3341,7 @@ function App() {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              onClick={() => setSettingsOpen(false)}
+              onClick={closeSettingsPanel}
               className="fixed inset-0 z-40 bg-slate-950/30"
             />
             <motion.aside
@@ -2741,7 +3362,7 @@ function App() {
                 </div>
                 <button
                   type="button"
-                  onClick={() => setSettingsOpen(false)}
+                  onClick={closeSettingsPanel}
                   className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 text-slate-500 transition-colors hover:border-slate-300 hover:text-slate-700"
                   aria-label="Close settings"
                 >
@@ -2752,12 +3373,19 @@ function App() {
               <div className="app-scrollbar flex-1 space-y-6 overflow-y-auto px-6 py-6">
                 <section className="space-y-4">
                   <div>
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-slate-400">
-                      Capture
-                    </p>
-                    <p className="mt-1 text-sm text-slate-500">
-                      Choose the input device and real-time transcription settings.
-                    </p>
+                    <div className="flex items-center gap-2">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-slate-400">
+                        文字起こし
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setSettingsHelpTopic("transcription")}
+                        className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-slate-200 text-slate-400 transition-colors hover:border-[#007aff] hover:text-[#007aff]"
+                        aria-label="文字起こし設定の説明"
+                      >
+                        <CircleHelp className="size-3.5" />
+                      </button>
+                    </div>
                   </div>
 
                   <div className="space-y-2">
@@ -2783,7 +3411,7 @@ function App() {
                     <>
                       <div className="grid gap-4 sm:grid-cols-2">
                         <div className="space-y-2">
-                          <label className="field-label">Language</label>
+                          <label className="field-label">言語</label>
                           <select
                             value={draftSettings.transcription.language}
                             onChange={(event) => {
@@ -2812,7 +3440,7 @@ function App() {
                         </div>
 
                         <div className="space-y-2">
-                          <label className="field-label">Model</label>
+                          <label className="field-label">Moonshine Model</label>
                           <select
                             value={draftSettings.transcription.modelPreset}
                             onChange={(event) =>
@@ -2835,9 +3463,24 @@ function App() {
                         </div>
                       </div>
 
-                      <div className="grid gap-4 sm:grid-cols-2">
-                        <div className="space-y-2">
-                          <label className="field-label">Batch Engine</label>
+                      <div className="space-y-4 border-t border-slate-100 pt-4">
+                        <div className="flex items-center gap-2">
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-slate-400">
+                            BATCH
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => setSettingsHelpTopic("batch")}
+                            className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-slate-200 text-slate-400 transition-colors hover:border-[#007aff] hover:text-[#007aff]"
+                            aria-label="BATCH設定の説明"
+                          >
+                            <CircleHelp className="size-3.5" />
+                          </button>
+                        </div>
+
+                        <div className="grid gap-4 sm:grid-cols-2">
+                          <div className="space-y-2">
+                            <label className="field-label">ENGINEERING</label>
                           <select
                             value={draftSettings.transcription.batchTranscriptionEngine}
                             onChange={(event) =>
@@ -2862,13 +3505,20 @@ function App() {
                               </option>
                             ))}
                           </select>
-                          <p className="text-xs leading-5 text-slate-500">
-                            Used by the saved-audio transcript refinement button.
-                          </p>
-                        </div>
+                          </div>
 
-                        <div className="space-y-2">
-                          <label className="field-label">Batch Model</label>
+                          <div className="space-y-2">
+                            <div className="flex items-center gap-2">
+                              <label className="field-label">MODEL</label>
+                              <button
+                                type="button"
+                                onClick={() => setSettingsHelpTopic("batchModel")}
+                                className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-slate-200 text-slate-400 transition-colors hover:border-[#007aff] hover:text-[#007aff]"
+                                aria-label="Batch Modelの説明"
+                              >
+                                <CircleHelp className="size-3.5" />
+                              </button>
+                            </div>
                           {draftSettings.transcription.batchTranscriptionEngine ===
                           "moonshine" ? (
                             <select
@@ -2902,25 +3552,17 @@ function App() {
                                   },
                                 }))
                               }
-                              className="field-input"
-                            >
-                              {(meta?.fasterWhisperModels ?? [
-                                "tiny",
-                                "base",
-                                "small",
-                                "medium",
-                                "large-v3",
-                              ]).map((model) => (
+                            className="field-input"
+                          >
+                            {(meta?.fasterWhisperModels ??
+                              FALLBACK_FASTER_WHISPER_MODELS).map((model) => (
                                 <option key={model} value={model}>
                                   Faster Whisper {model}
                                 </option>
                               ))}
                             </select>
                           )}
-                          <p className="text-xs leading-5 text-slate-500">
-                            Faster Whisper models are stored under LocalAppData, not
-                            OneDrive.
-                          </p>
+                          </div>
                         </div>
                       </div>
 
@@ -3020,23 +3662,25 @@ function App() {
                   <>
                     <section className="space-y-4">
                       <div>
-                        <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-slate-400">
-                          Local LLM
-                        </p>
-                        <p className="mt-1 text-sm text-slate-500">
-                          Ollama refinement runs locally and appears beside the raw
-                          transcript.
-                        </p>
+                        <div className="flex items-center gap-2">
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-slate-400">
+                            Local LLM
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => setSettingsHelpTopic("localLlm")}
+                            className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-slate-200 text-slate-400 transition-colors hover:border-[#007aff] hover:text-[#007aff]"
+                            aria-label="Local LLMの説明"
+                          >
+                            <CircleHelp className="size-3.5" />
+                          </button>
+                        </div>
                       </div>
 
                       <label className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
                         <div>
                           <p className="text-sm font-medium text-slate-900">
                             Enable refinement
-                          </p>
-                          <p className="mt-1 text-xs text-slate-500">
-                            Keep Moonshine text intact while writing the LLM result in a
-                            separate column.
                           </p>
                         </div>
                         <input
@@ -3220,12 +3864,19 @@ function App() {
 
                     <section className="space-y-4">
                       <div>
-                        <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-slate-400">
-                          AI Providers
-                        </p>
-                        <p className="mt-1 text-sm text-slate-500">
-                          Existing provider settings are preserved and editable here.
-                        </p>
+                        <div className="flex items-center gap-2">
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-slate-400">
+                            AI Providers
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => setSettingsHelpTopic("providers")}
+                            className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-slate-200 text-slate-400 transition-colors hover:border-[#007aff] hover:text-[#007aff]"
+                            aria-label="AI Providersの説明"
+                          >
+                            <CircleHelp className="size-3.5" />
+                          </button>
+                        </div>
                       </div>
 
                       <div className="space-y-2">
@@ -3461,13 +4112,13 @@ function App() {
                 <Button
                   variant="secondary"
                   className="flex-1"
-                  onClick={() => setSettingsOpen(false)}
+                  onClick={closeSettingsPanel}
                 >
                   Close
                 </Button>
                 <Button
                   className="flex-1"
-                  onClick={() => void saveSettings()}
+                  onClick={saveSettingsAndClose}
                   disabled={savingSettings || !draftSettings}
                 >
                   {savingSettings ? (
@@ -3475,10 +4126,61 @@ function App() {
                   ) : (
                     <Save className="size-4" />
                   )}
-                  Save Settings
+                  保存して閉じる
                 </Button>
               </div>
             </motion.aside>
+          </>
+        ) : null}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {settingsHelpTopic ? (
+          <>
+            <motion.button
+              type="button"
+              aria-label="Close help modal"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setSettingsHelpTopic(null)}
+              className="fixed inset-0 z-[70] bg-slate-950/35"
+            />
+            <motion.div
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="settings-help-title"
+              initial={{ opacity: 0, y: 18, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 12, scale: 0.98 }}
+              transition={{ duration: 0.18, ease: "easeOut" }}
+              className="fixed left-1/2 top-1/2 z-[80] flex max-h-[82vh] w-[min(92vw,760px)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-[0_24px_90px_rgba(15,23,42,0.22)]"
+            >
+              <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4">
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-slate-400">
+                    Help
+                  </p>
+                  <h3
+                    id="settings-help-title"
+                    className="mt-1 text-lg font-semibold text-slate-900"
+                  >
+                    {SETTINGS_HELP_TITLES[settingsHelpTopic]}
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSettingsHelpTopic(null)}
+                  className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 text-slate-500 transition-colors hover:border-slate-300 hover:text-slate-700"
+                  aria-label="Close help"
+                >
+                  <X className="size-4" />
+                </button>
+              </div>
+              <div className="app-scrollbar overflow-y-auto px-5 py-5">
+                <SettingsHelpContent topic={settingsHelpTopic} />
+              </div>
+            </motion.div>
           </>
         ) : null}
       </AnimatePresence>

@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>リンク管理</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Roboto:wght@400;500&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Round" rel="stylesheet">
+  <style>
+    :root {
+      --primary: #7c4dff;
+      --bg: #f8f9fa;
+      --surface: #ffffff;
+      --on-surface: #202124;
+      --on-surface-variant: #5f6368;
+      --outline: #dadce0;
+    }
+    body {
+      margin: 0;
+      font-family: 'Google Sans', 'Roboto', sans-serif;
+      background-color: var(--bg);
+      color: var(--on-surface);
+      -webkit-tap-highlight-color: transparent;
+      overscroll-behavior-y: none;
+    }
+    .app-bar {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      background: var(--surface);
+      padding: 8px 16px;
+      box-shadow: 0 1px 2px 0 rgba(60,64,67,0.3), 0 1px 3px 1px rgba(60,64,67,0.15);
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .app-title {
+      font-size: 16px;
+      font-weight: 500;
+      color: var(--on-surface);
+      margin: 0;
+      flex: 1;
+    }
+    .link-list {
+      padding: 16px;
+      padding-bottom: 96px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-width: 600px;
+      margin: 0 auto;
+    }
+    .link-card {
+      background: var(--surface);
+      border-radius: 12px;
+      padding: 10px 16px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      box-shadow: 0 1px 2px 0 rgba(60,64,67,0.3), 0 1px 3px 1px rgba(60,64,67,0.15);
+      transition: transform 0.2s, box-shadow 0.2s;
+      position: relative;
+      touch-action: pan-y;
+      user-select: none;
+    }
+    .link-card.dragging {
+      transform: scale(1.02);
+      box-shadow: 0 4px 5px 0 rgba(60,64,67,0.3), 0 1px 10px 0 rgba(60,64,67,0.15);
+      z-index: 10;
+      opacity: 0.9;
+    }
+    .link-content {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      text-decoration: none;
+    }
+    .link-title {
+      font-size: 18px;
+      font-weight: 500;
+      color: var(--on-surface);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .link-actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .icon-btn {
+      appearance: none;
+      background: transparent;
+      border: none;
+      color: var(--on-surface-variant);
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .icon-btn:hover, .icon-btn:active {
+      background: rgba(60,64,67,0.08);
+      color: var(--on-surface);
+    }
+    .fab {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      width: 56px;
+      height: 56px;
+      border-radius: 28px;
+      background: var(--primary);
+      color: white;
+      border: none;
+      box-shadow: 0 3px 5px -1px rgba(0,0,0,0.2), 0 6px 10px 0 rgba(0,0,0,0.14), 0 1px 18px 0 rgba(0,0,0,0.12);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      z-index: 40;
+      transition: transform 0.2s, background 0.2s;
+    }
+    .fab:active {
+      transform: scale(0.95);
+      background: #5b21b6;
+    }
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(32,33,36,0.6);
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+    .modal-content {
+      background: var(--surface);
+      border-radius: 28px;
+      width: 100%;
+      max-width: 400px;
+      padding: 24px;
+      box-shadow: 0 24px 38px 3px rgba(0,0,0,0.14), 0 9px 46px 8px rgba(0,0,0,0.12), 0 11px 15px -7px rgba(0,0,0,0.2);
+    }
+    .input-group {
+      display: flex;
+      align-items: center;
+      background: #f1f3f4;
+      border-radius: 16px;
+      padding: 4px 16px;
+      margin-bottom: 16px;
+      transition: background 0.2s;
+    }
+    .input-group:focus-within {
+      background: #e8eaf6;
+    }
+    .input-group .material-icons-round {
+      color: var(--on-surface-variant);
+      margin-right: 12px;
+    }
+    .input-group input {
+      flex: 1;
+      background: transparent;
+      border: none;
+      padding: 16px 0;
+      font-size: 16px;
+      color: var(--on-surface);
+      outline: none;
+    }
+    .modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-top: 24px;
+    }
+    .btn-text {
+      background: transparent;
+      border: none;
+      color: var(--primary);
+      font-weight: 500;
+      padding: 10px 16px;
+      border-radius: 20px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    .btn-text:hover {
+      background: rgba(124, 77, 255, 0.08);
+    }
+    .btn-filled {
+      background: var(--primary);
+      color: white;
+      border: none;
+      font-weight: 500;
+      padding: 10px 24px;
+      border-radius: 20px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    .btn-filled:hover {
+      background: #5b21b6;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+    const STORAGE_KEY = 'mobileQuickLinks_v2';
+    const DEFAULT_LINKS = [
+      { id: '1', label: 'ブログ', url: 'https://blog-vercel-dun.vercel.app/' },
+      { id: '2', label: '投資日記', url: 'https://seahirodigital.github.io/investment_dashboard/' },
+    ];
+
+    function normalizeUrl(url) {
+      let v = url.trim();
+      if (!v) return '';
+      if (!/^https?:\/\//i.test(v)) return `https://${v}`;
+      return v;
+    }
+
+    function App() {
+      const [links, setLinks] = useState(() => {
+        try {
+          const raw = JSON.parse(localStorage.getItem(STORAGE_KEY));
+          return raw && raw.length ? raw : DEFAULT_LINKS;
+        } catch {
+          return DEFAULT_LINKS;
+        }
+      });
+
+      useEffect(() => {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(links));
+      }, [links]);
+
+      // State
+      const [modalOpen, setModalOpen] = useState(false);
+      const [editId, setEditId] = useState(null);
+      const [label, setLabel] = useState('');
+      const [url, setUrl] = useState('');
+      const [pipelineRunning, setPipelineRunning] = useState(false);
+      const [noteDraftRunning, setNoteDraftRunning] = useState(false);
+
+      const API_BASE = '/api';
+
+      const handlePipeline = async () => {
+        setPipelineRunning(true);
+        try {
+          const res = await fetch(`${API_BASE}/trigger`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode: 'batch' }),
+          });
+          if (!res.ok) throw new Error('パイプラインの起動に失敗しました');
+          alert('🚀 パイプラインを起動しました！GitHub Actionsで進捗を確認してください。');
+        } catch (e) {
+          alert('❌ パイプライン起動に失敗: ' + e.message);
+        } finally {
+          setPipelineRunning(false);
+        }
+      };
+
+      const handleNoteDraft = async () => {
+        if (!confirm('最新の記事をnoteに下書き投稿しますか？')) return;
+        setNoteDraftRunning(true);
+        try {
+          const artRes = await fetch(`${API_BASE}/articles`);
+          if (!artRes.ok) throw new Error('記事一覧の取得に失敗しました');
+          const data = await artRes.json();
+          const arts = data.articles || [];
+          if (arts.length === 0) throw new Error('記事がありません');
+          
+          const latestArticle = arts.sort((a, b) => new Date(b.lastModified).getTime() - new Date(a.lastModified).getTime())[0];
+          
+          const res = await fetch(`${API_BASE}/note-draft`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fileIds: [latestArticle.id], noteTarget: 'blog_main' }),
+          });
+          if (!res.ok) throw new Error('note下書き投稿の起動に失敗しました');
+          
+          alert(`📝 note下書き投稿を開始しました！(${latestArticle.name.replace(/^\\d{8}_\\d{4}_/, '').replace('.md', '')})\\nGitHub Actionsで進捗を確認してください。`);
+        } catch (e) {
+          alert('❌ note下書き投稿に失敗: ' + e.message);
+        } finally {
+          setNoteDraftRunning(false);
+        }
+      };
+
+      // Drag & Drop State
+      const [draggingIndex, setDraggingIndex] = useState(null);
+      const touchTimerRef = useRef(null);
+      const dragNodeRef = useRef(null);
+      const movedRef = useRef(false);
+
+      const openModal = (id = null) => {
+        if (id) {
+          const target = links.find(l => l.id === id);
+          setLabel(target.label);
+          setUrl(target.url);
+          setEditId(id);
+        } else {
+          setLabel('');
+          setUrl('');
+          setEditId(null);
+        }
+        setModalOpen(true);
+      };
+
+      const saveLink = () => {
+        if (!label.trim() || !url.trim()) return;
+        const normalized = normalizeUrl(url);
+        
+        if (editId) {
+          setLinks(prev => prev.map(l => l.id === editId ? { ...l, label, url: normalized } : l));
+        } else {
+          setLinks(prev => [...prev, { id: Date.now().toString(), label, url: normalized }]);
+        }
+        setModalOpen(false);
+      };
+
+      const deleteLink = (id) => {
+        if(confirm("削除しますか？")){
+          setLinks(prev => prev.filter(l => l.id !== id));
+        }
+      };
+
+      const handleTouchStart = (e, index) => {
+        movedRef.current = false;
+        dragNodeRef.current = e.target.closest('.link-card');
+        touchTimerRef.current = setTimeout(() => {
+          setDraggingIndex(index);
+          if (navigator.vibrate) navigator.vibrate(50);
+        }, 350); // 350ms long press to drag
+      };
+
+      const handleTouchMove = (e) => {
+        if (draggingIndex === null) {
+          movedRef.current = true;
+          clearTimeout(touchTimerRef.current);
+          return;
+        }
+        e.preventDefault(); // Stop scroll when reordering
+        const touch = e.touches[0];
+        const target = document.elementFromPoint(touch.clientX, touch.clientY);
+        const card = target?.closest('.link-card');
+        if (card && card.dataset.index) {
+          const hoverIndex = parseInt(card.dataset.index, 10);
+          if (hoverIndex !== draggingIndex) {
+            setLinks(prev => {
+              const next = [...prev];
+              const temp = next[draggingIndex];
+              next.splice(draggingIndex, 1);
+              next.splice(hoverIndex, 0, temp);
+              return next;
+            });
+            setDraggingIndex(hoverIndex);
+          }
+        }
+      };
+
+      const handleTouchEnd = (e, link) => {
+        clearTimeout(touchTimerRef.current);
+        if (draggingIndex !== null) {
+          e.preventDefault(); // Prevent click if we were dragging
+          setDraggingIndex(null);
+        } else if (!movedRef.current && e.target.closest('.link-content')) {
+          // Normal tap, go to link
+          window.open(link.url, '_blank', 'noopener,noreferrer');
+        }
+      };
+
+      return (
+        <div>
+          <header className="app-bar">
+            <a href="/index.html" className="icon-btn" style={{ marginLeft: '-8px' }}>
+              <span className="material-icons-round">arrow_back</span>
+            </a>
+            <h1 className="app-title">リンク管理</h1>
+
+            <button
+              onClick={handleNoteDraft}
+              disabled={noteDraftRunning}
+              className={`flex items-center gap-1.5 font-semibold rounded-lg px-2 py-1.5 text-xs transition-all border ${
+                noteDraftRunning
+                  ? 'border-slate-200 text-slate-400 cursor-not-allowed'
+                  : 'border-[#7C4DFF] text-[#7C4DFF] bg-white hover:bg-purple-50'
+              }`}
+              title="最新記事をnote下書き"
+            >
+              {noteDraftRunning ? (
+                <svg className="animate-spin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a9 9 0 11-6.219-8.56"/></svg>
+              ) : (
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 20h9M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+              )}
+              <span className="hidden sm:inline">下書き</span>
+            </button>
+            <button
+              onClick={handlePipeline}
+              disabled={pipelineRunning}
+              className={`flex items-center gap-1.5 font-semibold rounded-lg px-2 py-1.5 text-xs transition-all border ${
+                pipelineRunning
+                  ? 'border-slate-200 text-slate-400 cursor-not-allowed'
+                  : 'border-[#7C4DFF] text-[#7C4DFF] bg-white hover:bg-purple-50'
+              }`}
+              title="パイプライン実行"
+            >
+              {pipelineRunning ? (
+                <svg className="animate-spin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a9 9 0 11-6.219-8.56"/></svg>
+              ) : (
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M8 5v14l11-7z"/></svg>
+              )}
+              <span className="hidden sm:inline">パイプライン</span>
+            </button>
+          </header>
+
+          <main className="link-list">
+            {links.map((link, index) => (
+              <div 
+                key={link.id} 
+                data-index={index}
+                className={`link-card ${draggingIndex === index ? 'dragging' : ''}`}
+                onTouchStart={(e) => handleTouchStart(e, index)}
+                onTouchMove={handleTouchMove}
+                onTouchEnd={(e) => handleTouchEnd(e, link)}
+                onClick={(e) => {
+                  // Fallback for desktop clicks if needed. On mobile touch events handle navigation.
+                  if (e.target.closest('.icon-btn')) return;
+                  if (draggingIndex === null) window.open(link.url, '_blank', 'noopener,noreferrer');
+                }}
+              >
+                <div className="link-content">
+                  <div className="link-title">{link.label}</div>
+                </div>
+                <div className="link-actions">
+                  <button className="icon-btn" onClick={(e) => { e.stopPropagation(); openModal(link.id); }}>
+                    <span className="material-icons-round">edit</span>
+                  </button>
+                  <button className="icon-btn" onClick={(e) => { e.stopPropagation(); deleteLink(link.id); }}>
+                    <span className="material-icons-round">delete_outline</span>
+                  </button>
+                  <div className="icon-btn" style={{ cursor: 'grab', color: '#dadce0' }}>
+                     <span className="material-icons-round">drag_indicator</span>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </main>
+
+          <button className="fab" onClick={() => openModal()}>
+            <span className="material-icons-round">add</span>
+          </button>
+
+          {modalOpen && (
+            <div className="modal-overlay" onClick={() => setModalOpen(false)}>
+              <div className="modal-content" onClick={e => e.stopPropagation()}>
+                <div className="input-group">
+                  <span className="material-icons-round">title</span>
+                  <input 
+                    type="text" 
+                    placeholder="タイトル" 
+                    value={label} 
+                    onChange={e => setLabel(e.target.value)} 
+                    autoFocus
+                  />
+                </div>
+                <div className="input-group">
+                  <span className="material-icons-round">public</span>
+                  <input 
+                    type="url" 
+                    placeholder="URL (https://...)" 
+                    value={url} 
+                    onChange={e => setUrl(e.target.value)} 
+                  />
+                </div>
+                <div className="modal-actions">
+                  <button className="btn-text" onClick={() => setModalOpen(false)}>キャンセル</button>
+                  <button className="btn-filled" onClick={saveLink}>保存</button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>

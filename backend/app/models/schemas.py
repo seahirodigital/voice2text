@@ -64,7 +64,7 @@ class TranscriptionSettings(BaseModel):
     batch_moonshine_model_preset: str = Field(
         default="base", alias="batchMoonshineModelPreset"
     )
-    faster_whisper_model: str = Field(default="base", alias="fasterWhisperModel")
+    faster_whisper_model: str = Field(default="small", alias="fasterWhisperModel")
     max_speakers: int = Field(default=3, alias="maxSpeakers", ge=1, le=3)
     update_interval_ms: int = Field(
         default=5000, alias="updateIntervalMs", ge=100, le=5000

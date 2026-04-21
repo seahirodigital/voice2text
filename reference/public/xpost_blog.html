@@ -1,0 +1,2546 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Xpost_blog</title>
+  <meta name="description" content="Xpost_blog" />
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <style>
+    :root {
+      --app-bg: #f5f5f7;
+      --surface: #ffffff;
+      --surface-soft: #f5f5f7;
+      --line: #d2d2d7;
+      --line-strong: #0071e3;
+      --text: #1d1d1f;
+      --text-soft: rgba(0, 0, 0, 0.56);
+      --accent: #0071e3;
+      --accent-soft: rgba(0, 113, 227, 0.08);
+      --danger: #b91c1c;
+      --sidebar-width: 280px;
+      --source-width: 300px;
+      --editor-width: 500px;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; overflow: hidden; }
+    body {
+      color: var(--text);
+      background: var(--app-bg);
+      font-family: "SF Pro Text", "SF Pro Icons", "Helvetica Neue", Helvetica, Arial, sans-serif;
+    }
+    button, textarea, input { font: inherit; }
+    button { color: inherit; }
+    a { color: #0066cc; }
+
+    @keyframes fadeInUp {
+      from {
+        opacity: 0;
+        transform: translateY(10px);
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .app-shell {
+      height: 100vh;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      background: var(--app-bg);
+    }
+
+    .topbar {
+      position: relative;
+      height: 50px;
+      flex: 0 0 50px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 0 12px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.86);
+      backdrop-filter: saturate(180%) blur(20px);
+    }
+
+    .brand {
+      margin: 0;
+      font-family: "SF Pro Display", "SF Pro Icons", "Helvetica Neue", Helvetica, Arial, sans-serif;
+      font-size: 17px;
+      font-weight: 600;
+      letter-spacing: -0.24px;
+      white-space: nowrap;
+    }
+
+    .brand-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 6px;
+      min-width: 0;
+    }
+
+    .toolbar::-webkit-scrollbar {
+      display: none;
+    }
+
+    .status-live {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    .mobile-tabbar {
+      display: none;
+      align-items: flex-end;
+      gap: 0;
+      padding: 5px 12px 0;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.96);
+      backdrop-filter: saturate(180%) blur(18px);
+    }
+
+    .mobile-tab {
+      flex: 1 1 0;
+      min-width: 0;
+      height: 28px;
+      padding: 0 8px;
+      border: 0;
+      border-bottom: 2px solid transparent;
+      background: transparent;
+      color: var(--text-soft);
+      border-radius: 0;
+      font-size: 12px;
+      font-weight: 600;
+      white-space: nowrap;
+      line-height: 1;
+      transition: color 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+    }
+
+    .mobile-tab.active {
+      color: var(--accent);
+      background: transparent;
+      border-color: var(--accent);
+      font-weight: 800;
+    }
+
+    .mobile-tab:hover {
+      color: var(--text);
+    }
+
+    .mobile-tab[hidden] {
+      display: none;
+    }
+
+    .mobile-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 70;
+      border: 0;
+      padding: 0;
+      background: rgba(29, 29, 31, 0.18);
+      backdrop-filter: blur(4px);
+      cursor: pointer;
+    }
+
+    .mobile-overlay[hidden] {
+      display: none;
+    }
+
+    .tool-button,
+    .icon-button,
+    .icon-link,
+    .flat-button {
+      height: 30px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 0 10px;
+      border: 1px solid var(--line);
+      background: var(--surface);
+      color: var(--text);
+      text-decoration: none;
+      cursor: pointer;
+      border-radius: 999px;
+      transition: color 0.15s, background 0.15s, border-color 0.15s, transform 0.15s, box-shadow 0.15s;
+    }
+
+    .tool-button:hover,
+    .icon-button:hover,
+    .icon-link:hover,
+    .flat-button:hover {
+      background: var(--surface-soft);
+      border-color: var(--line-strong);
+    }
+
+    .tool-button.primary {
+      color: #ffffff;
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+
+    .tool-button.primary:hover {
+      background: #0077ed;
+      border-color: #0077ed;
+    }
+
+    .tool-button.accent-fill {
+      color: #ffffff;
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+
+    .tool-button.accent-fill:hover {
+      background: #0077ed;
+      border-color: #0077ed;
+    }
+
+    .tool-button.accent-outline {
+      color: var(--accent);
+      background: #ffffff;
+      border-color: var(--accent);
+    }
+
+    .tool-button.accent-outline:hover {
+      background: var(--accent-soft);
+      border-color: var(--accent);
+    }
+
+    .tool-button.danger {
+      color: var(--danger);
+      border-color: rgba(185, 28, 28, 0.35);
+    }
+
+    .action-button {
+      height: 34px;
+      gap: 6px;
+      padding: 0 12px;
+      border: 1px solid var(--accent);
+      border-radius: 0.75rem;
+      background: #ffffff;
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+      white-space: nowrap;
+      flex: 0 0 auto;
+      box-shadow: 0 1px 2px rgba(0, 113, 227, 0.08);
+    }
+
+    .action-button:hover {
+      background: var(--accent-soft);
+      border-color: var(--accent);
+      color: #005bbb;
+    }
+
+    .button-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      line-height: 0;
+    }
+
+    .action-button .button-icon svg {
+      width: 14px;
+      height: 14px;
+    }
+
+    .button-label {
+      line-height: 1;
+    }
+
+    .action-button.action-save {
+      width: 36px;
+      padding: 0;
+      gap: 0;
+      border-color: var(--accent);
+      background: #ffffff;
+      color: var(--accent);
+      box-shadow: 0 1px 2px rgba(0, 113, 227, 0.08);
+    }
+
+    .action-button.action-save:hover {
+      background: var(--accent-soft);
+      border-color: var(--accent);
+      color: #005bbb;
+    }
+
+    .action-button.action-save .button-icon svg {
+      width: 15px;
+      height: 15px;
+    }
+
+    .icon-button,
+    .icon-link {
+      width: auto;
+      height: auto;
+      padding: 0;
+      flex: 0 0 auto;
+      border: 0;
+      background: transparent;
+      border-radius: 0;
+      color: var(--text-soft);
+    }
+
+    .tool-button[disabled],
+    .icon-button[disabled],
+    .flat-button[disabled],
+    .icon-link[aria-disabled="true"] {
+      opacity: 0.42;
+      pointer-events: none;
+    }
+
+    .icon-button:hover,
+    .icon-link:hover {
+      background: transparent;
+      border-color: transparent;
+      color: var(--accent);
+    }
+
+    .tool-button:active,
+    .icon-button:active,
+    .flat-button:active,
+    .mobile-tab:active,
+    .chrome-button:active,
+    .tool-button.is-pressed,
+    .icon-button.is-pressed,
+    .flat-button.is-pressed,
+    .mobile-tab.is-pressed,
+    .chrome-button.is-pressed {
+      transform: translateY(1px) scale(0.98);
+    }
+
+    .chrome-button {
+      width: 32px;
+      height: 32px;
+      padding: 0;
+      border: 1px solid var(--line);
+      background: var(--surface);
+      border-radius: 10px;
+      color: var(--text-soft);
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+    }
+
+    .chrome-button:hover {
+      background: var(--surface-soft);
+      border-color: var(--line-strong);
+      color: var(--accent);
+    }
+
+    .mobile-menu-button,
+    .mobile-sidebar-close {
+      display: none;
+    }
+
+    .icon-button svg,
+    .icon-link svg,
+    .tool-button svg,
+    .flat-button svg {
+      width: 18px;
+      height: 18px;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 2;
+    }
+    .workspace {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      overflow: hidden;
+      background: var(--app-bg);
+    }
+
+    .panel,
+    .sidebar {
+      height: 100%;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      background: var(--surface);
+      border-right: 1px solid var(--line);
+    }
+
+    .sidebar {
+      width: var(--sidebar-width);
+      flex: 0 0 var(--sidebar-width);
+      border-left: 0;
+    }
+
+    .source-panel {
+      width: var(--source-width);
+      flex: 0 0 var(--source-width);
+    }
+
+    .editor-panel {
+      width: var(--editor-width);
+      flex: 0 0 var(--editor-width);
+    }
+
+    .preview-panel {
+      flex: 1 1 auto;
+      border-right: 0;
+    }
+
+    .source-hidden .source-panel,
+    .source-hidden #sourceHandle {
+      display: none;
+    }
+
+    .panel-header,
+    .sidebar-header {
+      height: 44px;
+      flex: 0 0 44px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 0 10px;
+      border-bottom: 1px solid var(--line);
+      background: var(--surface-soft);
+    }
+
+    .panel-title,
+    .sidebar-title {
+      flex: 1 1 auto;
+      min-width: 0;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      font-family: "SF Pro Display", "SF Pro Icons", "Helvetica Neue", Helvetica, Arial, sans-serif;
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: -0.2px;
+    }
+
+    .sidebar-controls {
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .panel-actions,
+    .editor-links,
+    .source-links {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 6px;
+      min-width: max-content;
+    }
+
+    .editor-panel .panel-title {
+      max-width: calc(100% - 228px);
+    }
+
+    .editor-panel .panel-actions {
+      min-width: 220px;
+      margin-left: auto;
+    }
+
+    .count-chip {
+      height: 26px;
+      display: inline-flex;
+      align-items: center;
+      padding: 0 8px;
+      background: transparent;
+      border: 1px solid var(--line);
+      color: var(--text-soft);
+      font-size: 12px;
+      white-space: nowrap;
+      border-radius: 999px;
+    }
+
+    .resize-handle {
+      width: 6px;
+      flex: 0 0 6px;
+      position: relative;
+      cursor: col-resize;
+      background: var(--surface-soft);
+      border-right: 1px solid var(--line);
+      border-left: 1px solid #ffffff;
+    }
+
+    .resize-handle::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 2px;
+      width: 1px;
+      background: var(--line-strong);
+      opacity: 0;
+    }
+
+    .resize-handle:hover::before,
+    .resize-handle.dragging::before {
+      opacity: 1;
+    }
+
+    .content-scroll {
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      background: var(--surface);
+    }
+
+    .sidebar-footer {
+      border-top: 1px solid var(--line);
+      padding: 6px 8px;
+      background: var(--surface);
+      flex-shrink: 0;
+    }
+
+    .sidebar-footer-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .sidebar-footer-button {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 4px;
+      border: 0;
+      background: transparent;
+      color: var(--text-soft);
+      font-size: 12px;
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .sidebar-footer-button:hover {
+      color: var(--accent);
+    }
+
+    .sidebar-footer-link {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 4px;
+      color: var(--text-soft);
+      font-size: 12px;
+      text-decoration: none;
+    }
+
+    .sidebar-footer-link:hover {
+      color: var(--accent);
+    }
+
+    .sidebar-footer-button svg {
+      width: 14px;
+      height: 14px;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 2;
+      flex-shrink: 0;
+    }
+
+    .sidebar-footer-link svg {
+      width: 14px;
+      height: 14px;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 2;
+      flex-shrink: 0;
+    }
+    .article-list {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .article-row {
+      width: 100%;
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      border: 0;
+      border-bottom: 1px solid var(--line);
+      border-left: 3px solid transparent;
+      background: var(--surface);
+      text-align: left;
+      cursor: pointer;
+      padding: 9px 10px 9px 9px;
+    }
+
+    .article-row:hover { background: var(--surface-soft); }
+    .article-row.active { border-left-color: var(--accent); background: var(--accent-soft); }
+    .article-row.selected { background: rgba(0, 113, 227, 0.12); }
+    .article-row-main { flex: 1 1 auto; min-width: 0; }
+    .article-check {
+      width: 16px;
+      height: 16px;
+      margin-top: 2px;
+      display: none;
+      flex: 0 0 16px;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--line);
+      background: #ffffff;
+      color: #ffffff;
+    }
+    .article-list.selecting .article-check { display: inline-flex; }
+    .article-row.selected .article-check {
+      border-color: var(--accent);
+      background: var(--accent);
+    }
+    .article-check svg {
+      width: 11px;
+      height: 11px;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 3;
+    }
+    .article-title { display: block; font-size: 13px; font-weight: 700; line-height: 1.45; }
+    .article-meta { display: block; margin-top: 4px; color: var(--text-soft); font-size: 11px; line-height: 1.35; }
+    .article-time { color: #334155; }
+
+    .sort-toggle,
+    .source-toggle {
+      height: 28px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: var(--text);
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .sort-toggle {
+      max-width: 92px;
+      color: var(--accent);
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+
+    .switch {
+      position: relative;
+      width: 38px;
+      height: 20px;
+      display: inline-flex;
+      border: 1px solid var(--line-strong);
+      background: var(--surface);
+    }
+
+    .switch::after {
+      content: "";
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 14px;
+      height: 14px;
+      background: var(--line-strong);
+      transition: transform 120ms ease, background 120ms ease;
+    }
+
+    .source-toggle[aria-pressed="true"] .switch {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+    }
+
+    .source-toggle[aria-pressed="true"] .switch::after {
+      transform: translateX(18px);
+      background: var(--accent);
+    }
+
+    .source-body,
+    .preview-body {
+      padding: 14px;
+      line-height: 1.75;
+      font-size: 14px;
+    }
+
+    .editor {
+      flex: 1;
+      width: 100%;
+      min-height: 0;
+      resize: none;
+      border: 0;
+      outline: none;
+      padding: 14px 16px 72px;
+      background: #ffffff;
+      color: var(--text);
+      font-family: "UDEV Gothic", "BIZ UDGothic", Consolas, monospace;
+      font-size: 14px;
+      line-height: 1.75;
+      tab-size: 2;
+    }
+
+    .panel-footer {
+      height: 28px;
+      flex: 0 0 28px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 0 10px;
+      border-top: 1px solid var(--line);
+      background: var(--surface-soft);
+      color: var(--text-soft);
+      font-size: 11px;
+      overflow: hidden;
+    }
+
+    .footer-text {
+      min-width: 0;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+
+    .empty {
+      padding: 18px 10px;
+      color: var(--text-soft);
+      font-size: 13px;
+    }
+
+    .meta-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      border-top: 1px solid var(--line);
+      border-left: 1px solid var(--line);
+      margin-bottom: 12px;
+    }
+
+    .meta-cell {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      padding: 8px;
+      border-right: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      background: var(--surface);
+    }
+
+    .meta-cell strong {
+      color: var(--text-soft);
+      font-size: 10px;
+      font-weight: 700;
+    }
+
+    .meta-cell span {
+      min-width: 0;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      font-size: 12px;
+    }
+
+    .markdown h1,
+    .markdown h2,
+    .markdown h3 {
+      margin: 1.2em 0 0.5em;
+      line-height: 1.4;
+    }
+    .markdown h1 { font-size: 1.55em; }
+    .markdown h2 { font-size: 1.28em; }
+    .markdown h3 { font-size: 1.1em; }
+    .markdown p { margin: 0 0 1em; }
+    .markdown ul,
+    .markdown ol { padding-left: 1.5em; }
+    .markdown blockquote {
+      margin: 1em 0;
+      padding: 0.1em 0 0.1em 1em;
+      border-left: 3px solid var(--line-strong);
+      color: var(--text-soft);
+    }
+    .markdown pre {
+      padding: 12px;
+      overflow: auto;
+      border: 1px solid var(--line);
+      background: #fbfbfd;
+      color: var(--text);
+    }
+    .markdown code {
+      font-family: "UDEV Gothic", Consolas, monospace;
+      font-size: 0.92em;
+    }
+
+    .ogp-card {
+      display: flex;
+      min-height: 96px;
+      max-height: 160px;
+      margin: 0.75rem 0;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      background: #ffffff;
+      color: inherit !important;
+      text-decoration: none !important;
+    }
+
+    .ogp-card:hover {
+      border-color: var(--line-strong);
+      background: var(--accent-soft);
+    }
+
+    .ogp-card-body {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.3rem;
+      padding: 0.8rem 0.9rem;
+      overflow: hidden;
+    }
+
+    .ogp-card-domain {
+      color: var(--text-soft);
+      font-size: 0.68rem;
+    }
+
+    .ogp-card-title {
+      color: var(--text);
+      font-size: 0.88rem;
+      font-weight: 800;
+      line-height: 1.4;
+      overflow: hidden;
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+    }
+
+    .ogp-card-desc {
+      margin-top: auto;
+      color: var(--text-soft);
+      font-size: 0.72rem;
+      line-height: 1.4;
+      overflow: hidden;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+    }
+
+    .ogp-card-image {
+      width: 136px;
+      min-width: 136px;
+      max-width: 136px;
+      object-fit: contain;
+      padding: 8px;
+      background: var(--surface-soft);
+    }
+
+    .context-menu {
+      position: fixed;
+      z-index: 120;
+      min-width: 220px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #ffffff;
+      box-shadow: 0 18px 42px rgba(0, 0, 0, 0.16);
+    }
+
+    .context-menu[hidden] { display: none; }
+
+    .context-menu-button {
+      width: 100%;
+      min-height: 42px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 18px;
+      border: 0;
+      background: transparent;
+      color: #334155;
+      cursor: pointer;
+      font-size: 15px;
+      text-align: left;
+    }
+
+    .context-menu-button:hover { background: #f1f5f9; }
+    .context-menu-button.primary { color: #7c3aed; font-weight: 700; }
+    .context-menu-button.primary:hover { background: #f5f3ff; }
+    .context-menu-button.danger { color: #ef4444; }
+    .context-menu-button.danger:hover { background: #fff1f2; }
+    .context-menu-button[disabled] {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+    .context-menu-button[disabled]:hover { background: transparent; }
+    .context-menu-button svg {
+      width: 18px;
+      height: 18px;
+      flex: 0 0 auto;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 2;
+    }
+    .context-menu-divider {
+      height: 1px;
+      margin: 4px 0;
+      background: var(--line);
+    }
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 80;
+      display: none;
+      background: rgba(29, 29, 31, 0.18);
+      backdrop-filter: blur(6px);
+    }
+
+    .toast-host {
+      position: fixed;
+      right: 1.5rem;
+      bottom: 1.5rem;
+      z-index: 9999;
+      pointer-events: none;
+    }
+
+    .toast {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.875rem 1.25rem;
+      border-radius: 0.75rem;
+      color: #ffffff;
+      font-size: 14px;
+      font-weight: 600;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+      animation: fadeInUp 0.3s ease-out;
+    }
+
+    .toast svg {
+      width: 16px;
+      height: 16px;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 2.5;
+      flex: 0 0 auto;
+    }
+
+    .toast-success {
+      background: linear-gradient(135deg, #10B981, #059669);
+    }
+
+    .toast-error {
+      background: linear-gradient(135deg, #F43F5E, #E11D48);
+    }
+
+    .toast-info {
+      background: linear-gradient(135deg, #7C4DFF, #651FFF);
+    }
+
+    .modal-backdrop.open {
+      display: flex;
+      align-items: stretch;
+      justify-content: flex-end;
+    }
+
+    .affiliate-modal {
+      width: min(720px, 92vw);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      background: var(--surface);
+      border-left: 1px solid var(--line);
+    }
+
+    .modal-header,
+    .modal-footer {
+      height: 48px;
+      flex: 0 0 48px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 0 12px;
+      border-bottom: 1px solid var(--line);
+      background: var(--surface-soft);
+    }
+
+    .modal-footer {
+      border-top: 1px solid var(--line);
+      border-bottom: 0;
+    }
+
+    .memo-tabs {
+      height: 40px;
+      flex: 0 0 40px;
+      display: flex;
+      align-items: center;
+      gap: 0;
+      overflow-x: auto;
+      border-bottom: 1px solid var(--line);
+      background: var(--surface);
+    }
+
+    .memo-tab {
+      height: 40px;
+      padding: 0 12px;
+      border: 0;
+      border-right: 1px solid var(--line);
+      background: var(--surface);
+      cursor: pointer;
+      font-weight: 700;
+    }
+
+    .memo-tab.active {
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+
+    .affiliate-editor {
+      flex: 1;
+      min-height: 0;
+      width: 100%;
+      border: 0;
+      outline: none;
+      resize: none;
+      padding: 14px;
+      font-family: "UDEV Gothic", "BIZ UDGothic", Consolas, monospace;
+      font-size: 14px;
+      line-height: 1.7;
+    }
+
+    @media (max-width: 1100px) and (min-width: 761px) {
+      .workspace { overflow-x: auto; }
+      .sidebar { min-width: 260px; }
+      .source-panel { min-width: 300px; }
+      .editor-panel { min-width: 480px; }
+      .preview-panel { min-width: 420px; }
+    }
+
+    @media (max-width: 760px) {
+      .topbar {
+        height: 48px;
+        min-height: 48px;
+        flex: 0 0 48px;
+        flex-wrap: nowrap;
+        align-items: center;
+        padding: 10px;
+        gap: 6px;
+      }
+      .brand-group {
+        width: auto;
+        flex: 0 0 auto;
+        gap: 6px;
+      }
+      .brand {
+        display: none;
+      }
+      .mobile-menu-button {
+        display: inline-flex;
+      }
+      .toolbar {
+        width: auto;
+        flex: 1 1 auto;
+        justify-content: flex-start;
+        overflow-x: auto;
+        padding-bottom: 0;
+        scrollbar-width: none;
+      }
+      .mobile-tabbar {
+        display: flex;
+      }
+      .action-button {
+        height: 30px;
+        padding: 0 10px;
+        font-size: 11px;
+      }
+      .action-button.action-save,
+      .chrome-button {
+        width: 30px;
+        height: 30px;
+      }
+      .workspace {
+        position: relative;
+        display: block;
+        overflow: hidden;
+      }
+      .panel {
+        display: none;
+        width: 100%;
+        height: 100%;
+        border-right: 0;
+      }
+      .workspace[data-mobile-tab="source"] .source-panel,
+      .workspace[data-mobile-tab="editor"] .editor-panel,
+      .workspace[data-mobile-tab="preview"] .preview-panel {
+        display: flex;
+      }
+      .sidebar {
+        position: fixed;
+        top: 0;
+        bottom: 0;
+        left: 0;
+        width: min(88vw, 320px);
+        max-width: 320px;
+        min-width: 0;
+        flex: none;
+        border-right: 1px solid var(--line);
+        box-shadow: 0 24px 56px rgba(15, 23, 42, 0.18);
+        transform: translateX(-100%);
+        transition: transform 0.22s ease;
+        z-index: 90;
+      }
+      .sidebar.mobile-open {
+        transform: translateX(0);
+      }
+      .resize-handle {
+        display: none;
+      }
+      .source-panel,
+      .editor-panel,
+      .preview-panel {
+        min-width: 0;
+        width: 100%;
+        flex: 1 1 auto;
+      }
+      .panel-header,
+      .sidebar-header {
+        padding: 0 12px;
+      }
+      .sidebar-controls {
+        gap: 6px;
+      }
+      .source-toggle {
+        display: none;
+      }
+      .mobile-sidebar-close {
+        display: inline-flex;
+      }
+      .sort-toggle {
+        max-width: 76px;
+      }
+      .panel-actions,
+      .editor-links,
+      .source-links {
+        min-width: 0;
+        gap: 4px;
+      }
+      .editor-panel .panel-title {
+        max-width: none;
+      }
+      .editor-panel .panel-actions {
+        min-width: 0;
+      }
+      .count-chip {
+        display: none;
+      }
+      .source-body,
+      .preview-body {
+        padding: 16px;
+        font-size: 16px;
+      }
+      .editor {
+        padding: 16px 16px 88px;
+        font-size: 16px;
+      }
+      .panel-footer {
+        height: 32px;
+        flex: 0 0 32px;
+        padding: 0 12px;
+      }
+      .toast-host {
+        left: 12px;
+        right: 12px;
+        bottom: 12px;
+      }
+      .toast {
+        display: flex;
+        width: 100%;
+        padding: 0.8rem 0.95rem;
+        border-radius: 0.85rem;
+        font-size: 13px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand-group">
+        <button type="button" class="icon-button chrome-button mobile-menu-button" id="mobileMenuButton" aria-label="Menu" title="Menu" aria-expanded="false"></button>
+        <h1 class="brand">Xpost_blog</h1>
+        <button type="button" class="icon-button chrome-button" id="refreshButton" aria-label="Refresh" title="Refresh"></button>
+      </div>
+      <div class="toolbar" role="toolbar" aria-label="Article actions">
+        <button type="button" class="tool-button action-button" id="noteDraftButton">Note</button>
+        <button type="button" class="tool-button action-button" id="queueButton">QUE</button>
+        <button type="button" class="tool-button action-button" id="pipelineButton">ALL</button>
+        <button type="button" class="tool-button action-button action-save" id="saveButton" aria-label="Save" title="Save"></button>
+      </div>
+      <span class="status-live" id="statusChip" aria-live="polite">初期化中</span>
+    </header>
+
+    <div class="toast-host" id="toastHost" aria-live="polite" aria-atomic="true"></div>
+
+    <div class="mobile-tabbar" id="mobileTabbar" role="tablist" aria-label="Workspace tabs">
+      <button type="button" class="mobile-tab" id="sourceTabButton" data-mobile-tab="source" role="tab" aria-selected="false">Source</button>
+      <button type="button" class="mobile-tab active" id="editorTabButton" data-mobile-tab="editor" role="tab" aria-selected="true">Editor</button>
+      <button type="button" class="mobile-tab" id="previewTabButton" data-mobile-tab="preview" role="tab" aria-selected="false">Preview</button>
+    </div>
+
+    <button type="button" class="mobile-overlay" id="mobileOverlay" aria-label="Close menu" title="Close menu" hidden></button>
+
+    <main class="workspace" id="mainPanels">
+      <aside class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+          <div class="sidebar-title">記事一覧</div>
+          <div class="sidebar-controls">
+            <button type="button" class="sort-toggle" id="sortToggle" aria-label="Sort order"></button>
+            <button type="button" class="source-toggle" id="sourceToggle" aria-pressed="true">
+              <span>Source</span>
+              <span class="switch" aria-hidden="true"></span>
+            </button>
+            <button type="button" class="icon-button chrome-button mobile-sidebar-close" id="mobileSidebarCloseButton" aria-label="Close menu" title="Close menu"></button>
+          </div>
+        </div>
+        <div class="content-scroll"><div class="article-list" id="articleList"><div class="empty">読み込み中</div></div></div>
+        <div class="sidebar-footer">
+          <div class="sidebar-footer-stack">
+            <button type="button" class="sidebar-footer-button" id="affiliateLauncher" title="アフィリエイトリンク管理">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.1 0l2-2a5 5 0 1 0-7.1-7.1l-1.1 1.1"/><path d="M14 11a5 5 0 0 0-7.1 0l-2 2a5 5 0 0 0 7.1 7.1l1.1-1.1"/></svg>
+              <span>アフィリンク</span>
+            </button>
+            <a class="sidebar-footer-link" href="/index.html" title="ブログエディターへ戻る">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5V4.5"/><path d="M8 7.5h10"/><path d="M8 12h8"/><path d="M8 16.5h6"/></svg>
+              <span>ブログエディター</span>
+            </a>
+            <a class="sidebar-footer-link" href="/info_viewer/index.html" title="Info-Viewerへ戻る">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="6" height="6"/><rect x="14" y="4" width="6" height="6"/><rect x="4" y="14" width="6" height="6"/><rect x="14" y="14" width="6" height="6"/></svg>
+              <span>Info-Viewer</span>
+            </a>
+          </div>
+        </div>
+      </aside>
+      <div class="resize-handle" id="sidebarHandle" aria-hidden="true"></div>
+
+      <section class="panel source-panel" id="sourcePanel">
+        <div class="panel-header">
+          <div class="panel-title">元投稿</div>
+          <div class="source-links" id="sourceLinks"></div>
+        </div>
+        <div class="content-scroll source-body markdown" id="sourceBody"><div class="empty">記事を選択してください</div></div>
+      </section>
+      <div class="resize-handle" id="sourceHandle" aria-hidden="true"></div>
+
+      <section class="panel editor-panel" id="editorPanel">
+        <div class="panel-header">
+          <div class="panel-title" id="editorTitle">エディター</div>
+          <div class="panel-actions">
+            <span class="count-chip" id="charCount">0字</span>
+            <div class="editor-links" id="editorLinks"></div>
+            <button type="button" class="icon-button" id="insertAffiliateButton" aria-label="アフィ挿入" title="アフィ挿入"></button>
+            <button type="button" class="icon-button" id="copyEditorButton" aria-label="本文コピー" title="本文コピー"></button>
+          </div>
+        </div>
+        <textarea class="editor" id="editor" spellcheck="false" placeholder="記事を選択してください"></textarea>
+        <div class="panel-footer">
+          <span class="footer-text" id="editorFooter">Ctrl+S / Command+S で保存</span>
+          <span class="footer-text" id="dirtyState">未編集</span>
+        </div>
+      </section>
+      <div class="resize-handle" id="editorHandle" aria-hidden="true"></div>
+
+      <section class="panel preview-panel">
+        <div class="panel-header">
+          <div class="panel-title">プレビュー</div>
+          <div class="panel-actions">
+            <button type="button" class="icon-button" id="refreshOgpButton" aria-label="OGP更新" title="OGP更新"></button>
+            <button type="button" class="icon-button" id="copyPreviewButton" aria-label="Markdownコピー" title="Markdownコピー"></button>
+          </div>
+        </div>
+        <div class="content-scroll preview-body markdown" id="preview"><div class="empty">記事を選択してください</div></div>
+        <div class="panel-footer"><span class="footer-text" id="previewFooter">OGP待機中</span></div>
+      </section>
+    </main>
+  </div>
+
+  <div class="modal-backdrop" id="affiliateModalBackdrop" aria-hidden="true">
+    <section class="affiliate-modal" role="dialog" aria-modal="true" aria-labelledby="affiliateModalTitle">
+      <div class="modal-header">
+        <strong id="affiliateModalTitle">tech affiliate</strong>
+        <div class="panel-actions">
+          <button type="button" class="flat-button" id="addMemoButton">MEMO追加</button>
+          <button type="button" class="flat-button" id="reloadAffiliateButton">再読込</button>
+          <button type="button" class="flat-button" id="closeAffiliateButton">閉じる</button>
+        </div>
+      </div>
+      <div class="memo-tabs" id="memoTabs"></div>
+      <textarea class="affiliate-editor" id="affiliateEditor" spellcheck="false"></textarea>
+      <div class="modal-footer">
+        <span class="footer-text" id="affiliateStatus">未読込</span>
+        <div class="panel-actions">
+          <button type="button" class="flat-button" id="insertAffiliateFromModalButton">記事末尾に挿入</button>
+          <button type="button" class="tool-button primary" id="saveAffiliateButton">保存</button>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div class="context-menu" id="articleContextMenu" hidden>
+    <button type="button" class="context-menu-button primary" id="contextSelectButton">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="4" height="4" rx="1"/><path d="M10 7h11M10 12h11M10 17h11"/><rect x="3" y="10" width="4" height="4" rx="1"/><rect x="3" y="15" width="4" height="4" rx="1"/></svg>
+      <span>選択</span>
+    </button>
+    <div class="context-menu-divider"></div>
+    <button type="button" class="context-menu-button" id="contextDuplicateButton">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+      <span>複製</span>
+    </button>
+    <button type="button" class="context-menu-button danger" id="contextDeleteButton">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+      <span>削除</span>
+    </button>
+    <div class="context-menu-divider"></div>
+    <button type="button" class="context-menu-button" id="contextOpenOneDriveButton">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+      <span>OneDriveで開く</span>
+    </button>
+    <button type="button" class="context-menu-button" id="contextOpenExplorerButton" hidden>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+      <span>エクスプローラーで表示</span>
+    </button>
+  </div>
+
+  <script>
+    const API = '/api/xpost-blog';
+    const SOURCE_VISIBLE_KEY = 'xpostBlog.sourceVisible';
+    const SORT_ORDER_KEY = 'xpostBlog.sortOrder';
+    const NOTE_DRAFT_STORAGE_KEY = 'xpostBlog.noteDraftUrls';
+    const ICONS = {
+      refresh: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6v5h-5"/><path d="M4 18v-5h5"/><path d="M18.5 9A7 7 0 0 0 6.2 6.2L4 8.5"/><path d="M5.5 15A7 7 0 0 0 17.8 17.8L20 15.5"/></svg>',
+      copy: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="11"/><path d="M5 15H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v1"/></svg>',
+      link: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.1 0l2-2a5 5 0 1 0-7.1-7.1l-1.1 1.1"/><path d="M14 11a5 5 0 0 0-7.1 0l-2 2a5 5 0 0 0 7.1 7.1l1.1-1.1"/></svg>',
+      x: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.901 2H21l-6.873 7.855L22.5 22h-6.556l-5.135-7.341L4.385 22H2.284l7.351-8.401L1.5 2h6.722l4.642 6.636L18.901 2Z" fill="currentColor" stroke="none"/></svg>',
+      discord: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 8.5c3.2-1.4 6.8-1.4 10 0"/><path d="M7.5 16.5c2.8 1.3 6.2 1.3 9 0"/><path d="M8 18c-2.4-.6-3.8-1.8-4.6-3.4.5-3.3 1.4-6.1 3.3-8.1 1.3.1 2.2.4 3.2 1"/><path d="M16 7.5c1-.6 1.9-.9 3.2-1 1.9 2 2.8 4.8 3.3 8.1-.8 1.6-2.2 2.8-4.6 3.4"/><path d="M9.5 13h.01"/><path d="M14.5 13h.01"/></svg>',
+      onedrive: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.4 18h9.1a4 4 0 0 0 .7-7.94A6.1 6.1 0 0 0 6.8 8.4 4.8 4.8 0 0 0 8.4 18Z"/></svg>',
+      ogp: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6v5h-5"/><path d="M4 18v-5h5"/><path d="M18.5 9A7 7 0 0 0 6.2 6.2L4 8.5"/><path d="M5.5 15A7 7 0 0 0 17.8 17.8L20 15.5"/></svg>',
+      menu: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h16"/></svg>',
+      close: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg>',
+      draft: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/><path d="M8 13h8"/><path d="M8 17h6"/></svg>',
+      queue: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M10 8.5v7l5-3.5z" fill="currentColor" stroke="none"/></svg>',
+      run: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 7v10l6.5-5z" fill="currentColor" stroke="none"/><path d="M13 7v10l6.5-5z" fill="currentColor" stroke="none"/></svg>',
+      save: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/></svg>',
+      check: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg>',
+      info: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>'
+    };
+
+    let toastTimer = 0;
+
+    const state = {
+      articles: [],
+      selectedArticle: null,
+      frontmatterContent: '',
+      editorContent: '',
+      sourceContent: '',
+      sourceMeta: null,
+      sourceVisible: localStorage.getItem(SOURCE_VISIBLE_KEY) !== '0',
+      sortOrder: localStorage.getItem(SORT_ORDER_KEY) === 'asc' ? 'asc' : 'desc',
+      dirty: false,
+      selectMode: false,
+      selectedArticleIds: new Set(),
+      contextArticleId: '',
+      affiliateMemos: { memo1: '' },
+      activeAffiliateKey: 'memo1',
+      affiliateDirty: false,
+      mobileTab: 'editor',
+      mobileSidebarOpen: false,
+      noteDraftUrls: (() => {
+        try {
+          return JSON.parse(localStorage.getItem(NOTE_DRAFT_STORAGE_KEY) || '{}');
+        } catch {
+          return {};
+        }
+      })(),
+      ogpCache: Object.create(null),
+      ogpRunId: 0,
+    };
+
+    const els = {
+      mainPanels: document.getElementById('mainPanels'),
+      statusChip: document.getElementById('statusChip'),
+      articleList: document.getElementById('articleList'),
+      sortToggle: document.getElementById('sortToggle'),
+      sourceToggle: document.getElementById('sourceToggle'),
+      sourceBody: document.getElementById('sourceBody'),
+      sourceLinks: document.getElementById('sourceLinks'),
+      editor: document.getElementById('editor'),
+      editorTitle: document.getElementById('editorTitle'),
+      editorLinks: document.getElementById('editorLinks'),
+      editorFooter: document.getElementById('editorFooter'),
+      dirtyState: document.getElementById('dirtyState'),
+      charCount: document.getElementById('charCount'),
+      preview: document.getElementById('preview'),
+      previewFooter: document.getElementById('previewFooter'),
+      saveButton: document.getElementById('saveButton'),
+      noteDraftButton: document.getElementById('noteDraftButton'),
+      queueButton: document.getElementById('queueButton'),
+      pipelineButton: document.getElementById('pipelineButton'),
+      toastHost: document.getElementById('toastHost'),
+      mobileMenuButton: document.getElementById('mobileMenuButton'),
+      mobileOverlay: document.getElementById('mobileOverlay'),
+      sourceTabButton: document.getElementById('sourceTabButton'),
+      editorTabButton: document.getElementById('editorTabButton'),
+      previewTabButton: document.getElementById('previewTabButton'),
+      refreshButton: document.getElementById('refreshButton'),
+      refreshOgpButton: document.getElementById('refreshOgpButton'),
+      copyEditorButton: document.getElementById('copyEditorButton'),
+      copyPreviewButton: document.getElementById('copyPreviewButton'),
+      insertAffiliateButton: document.getElementById('insertAffiliateButton'),
+      sidebar: document.getElementById('sidebar'),
+      sourcePanel: document.getElementById('sourcePanel'),
+      editorPanel: document.getElementById('editorPanel'),
+      sidebarHandle: document.getElementById('sidebarHandle'),
+      sourceHandle: document.getElementById('sourceHandle'),
+      editorHandle: document.getElementById('editorHandle'),
+      affiliateLauncher: document.getElementById('affiliateLauncher'),
+      affiliateModalBackdrop: document.getElementById('affiliateModalBackdrop'),
+      mobileSidebarCloseButton: document.getElementById('mobileSidebarCloseButton'),
+      closeAffiliateButton: document.getElementById('closeAffiliateButton'),
+      reloadAffiliateButton: document.getElementById('reloadAffiliateButton'),
+      saveAffiliateButton: document.getElementById('saveAffiliateButton'),
+      addMemoButton: document.getElementById('addMemoButton'),
+      memoTabs: document.getElementById('memoTabs'),
+      affiliateEditor: document.getElementById('affiliateEditor'),
+      affiliateStatus: document.getElementById('affiliateStatus'),
+      insertAffiliateFromModalButton: document.getElementById('insertAffiliateFromModalButton'),
+      articleContextMenu: document.getElementById('articleContextMenu'),
+      contextSelectButton: document.getElementById('contextSelectButton'),
+      contextDuplicateButton: document.getElementById('contextDuplicateButton'),
+      contextDeleteButton: document.getElementById('contextDeleteButton'),
+      contextOpenOneDriveButton: document.getElementById('contextOpenOneDriveButton'),
+      contextOpenExplorerButton: document.getElementById('contextOpenExplorerButton'),
+    };
+
+    function isMobileLayout() {
+      return window.innerWidth <= 760;
+    }
+
+    function setLabeledIconButton(button, label, iconName) {
+      if (!button) return;
+      button.innerHTML = `<span class="button-icon" aria-hidden="true">${ICONS[iconName] || ''}</span><span class="button-label">${label}</span>`;
+      button.setAttribute('aria-label', label);
+      button.title = label;
+    }
+
+    function setIconOnlyButton(button, label, iconName) {
+      if (!button) return;
+      button.innerHTML = ICONS[iconName] || '';
+      button.setAttribute('aria-label', label);
+      button.title = label;
+    }
+
+    function toastIcon(type) {
+      if (type === 'success') return ICONS.check;
+      if (type === 'error') return ICONS.close;
+      return ICONS.info;
+    }
+
+    function showToast(message, type = 'info') {
+      if (!els.toastHost) return;
+      window.clearTimeout(toastTimer);
+      els.toastHost.innerHTML = `<div class="toast toast-${escapeHtml(type)}" role="status">${toastIcon(type)}<span>${escapeHtml(message)}</span></div>`;
+      toastTimer = window.setTimeout(() => {
+        if (els.toastHost) els.toastHost.innerHTML = '';
+      }, 3500);
+    }
+
+    function pulseButton(button) {
+      if (!button) return;
+      window.clearTimeout(button._pulseTimer);
+      button.classList.remove('is-pressed');
+      void button.offsetWidth;
+      button.classList.add('is-pressed');
+      button._pulseTimer = window.setTimeout(() => button.classList.remove('is-pressed'), 180);
+    }
+
+    function updateMobileTabs() {
+      if (!els.mainPanels) return;
+      const mobileLayout = isMobileLayout();
+      if (!mobileLayout && !state.sourceVisible && state.mobileTab === 'source') {
+        state.mobileTab = 'editor';
+      }
+
+      if (els.sourceTabButton) {
+        els.sourceTabButton.hidden = !mobileLayout && !state.sourceVisible;
+      }
+
+      [
+        ['source', els.sourceTabButton],
+        ['editor', els.editorTabButton],
+        ['preview', els.previewTabButton],
+      ].forEach(([tabName, button]) => {
+        if (!button) return;
+        const isActive = state.mobileTab === tabName;
+        button.classList.toggle('active', isActive);
+        button.setAttribute('aria-selected', isActive ? 'true' : 'false');
+        button.tabIndex = isActive ? 0 : -1;
+      });
+
+      els.mainPanels.dataset.mobileTab = state.mobileTab;
+    }
+
+    function setMobileTab(tabName) {
+      state.mobileTab = tabName === 'source' && !state.sourceVisible && !isMobileLayout() ? 'editor' : tabName;
+      updateMobileTabs();
+    }
+
+    function setMobileSidebarOpen(open) {
+      const nextOpen = Boolean(open) && isMobileLayout();
+      state.mobileSidebarOpen = nextOpen;
+      document.body.classList.toggle('mobile-sidebar-open', nextOpen);
+      els.sidebar.classList.toggle('mobile-open', nextOpen);
+      if (els.mobileOverlay) {
+        els.mobileOverlay.hidden = !nextOpen;
+      }
+      if (els.mobileMenuButton) {
+        els.mobileMenuButton.setAttribute('aria-expanded', nextOpen ? 'true' : 'false');
+      }
+    }
+
+    function syncResponsiveChrome() {
+      if (!isMobileLayout()) {
+        setMobileSidebarOpen(false);
+      }
+      updateMobileTabs();
+    }
+
+    function initIcons() {
+      setIconOnlyButton(els.mobileMenuButton, 'Menu', 'menu');
+      setIconOnlyButton(els.mobileSidebarCloseButton, 'Close menu', 'close');
+      setIconOnlyButton(els.refreshButton, 'Refresh', 'refresh');
+      setIconOnlyButton(els.refreshOgpButton, 'Refresh preview', 'ogp');
+      setIconOnlyButton(els.insertAffiliateButton, 'Insert affiliate', 'link');
+      setIconOnlyButton(els.copyEditorButton, 'Copy editor', 'copy');
+      setIconOnlyButton(els.copyPreviewButton, 'Copy preview', 'copy');
+      setLabeledIconButton(els.noteDraftButton, 'Note', 'draft');
+      setLabeledIconButton(els.queueButton, 'QUE', 'queue');
+      setLabeledIconButton(els.pipelineButton, 'ALL', 'run');
+      setIconOnlyButton(els.saveButton, 'Save', 'save');
+    }
+
+    function setStatus(message, isError = false, toastType = '') {
+      els.statusChip.textContent = message;
+      els.statusChip.title = message;
+      els.statusChip.style.color = isError ? 'var(--danger)' : 'var(--text-soft)';
+      if (toastType) {
+        showToast(message, toastType);
+      } else if (isError) {
+        showToast(message, 'error');
+      }
+    }
+
+    function setAffiliateStatus(message, isError = false) {
+      els.affiliateStatus.textContent = message;
+      els.affiliateStatus.style.color = isError ? 'var(--danger)' : 'var(--text-soft)';
+    }
+
+    function persistNoteDraftUrls() {
+      try {
+        localStorage.setItem(NOTE_DRAFT_STORAGE_KEY, JSON.stringify(state.noteDraftUrls));
+      } catch {
+        // localStorage が使えない環境ではメモリ保持だけで続行する
+      }
+    }
+
+    function escapeHtml(text) {
+      return String(text || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function apiUrl(resource, params = {}) {
+      const url = new URL(API, window.location.origin);
+      url.searchParams.set('resource', resource);
+      Object.entries(params).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== '') {
+          url.searchParams.set(key, value);
+        }
+      });
+      return url.toString();
+    }
+    function renderMarkdown(text) {
+      if (!text || !String(text).trim()) {
+        return '<div class="empty">表示する内容がありません</div>';
+      }
+      if (window.marked?.parse) {
+        return marked.parse(text, { breaks: true, gfm: true });
+      }
+      return `<pre>${escapeHtml(text)}</pre>`;
+    }
+
+    function composeMarkdownDocument(frontmatter, body) {
+      const normalizedBody = String(body || '').trim();
+      const normalizedFrontmatter = String(frontmatter || '').trim();
+      if (!normalizedFrontmatter) return normalizedBody;
+      return normalizedBody ? `${normalizedFrontmatter}\n\n${normalizedBody}\n` : `${normalizedFrontmatter}\n`;
+    }
+
+    function articleTitle(article) {
+      return article?.h1Title || String(article?.name || '').replace(/\.md$/i, '') || '無題';
+    }
+
+    function formatDate(value) {
+      if (!value) return '';
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return '';
+      return new Intl.DateTimeFormat('ja-JP', {
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      }).format(date);
+    }
+
+    function formatDiscordDate(value) {
+      if (!value) return '';
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return '';
+      return new Intl.DateTimeFormat('ja-JP', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      }).format(date);
+    }
+
+    function articleSortTimestamp(article) {
+      const value = article?.discordPostedAt || article?.sourcePublishedAt || article?.sortPublishedAt || article?.lastModified || '';
+      const date = new Date(value);
+      const time = date.getTime();
+      return Number.isNaN(time) ? 0 : time;
+    }
+
+    function sortedArticles() {
+      const direction = state.sortOrder === 'asc' ? 1 : -1;
+      return [...state.articles].sort((a, b) => {
+        const diff = articleSortTimestamp(a) - articleSortTimestamp(b);
+        if (diff !== 0) return diff * direction;
+        return String(a.name || '').localeCompare(String(b.name || ''), 'ja-JP') * direction;
+      });
+    }
+
+    function updateSortButton() {
+      const isAsc = state.sortOrder === 'asc';
+      els.sortToggle.textContent = isAsc ? 'Sort: Oldest' : 'Sort: Newest';
+      els.sortToggle.title = isAsc ? 'Showing oldest first. Click to switch to newest first.' : 'Showing newest first. Click to switch to oldest first.';
+      els.sortToggle.setAttribute('aria-label', els.sortToggle.title);
+    }
+
+    function iconLink(href, label, iconName) {
+      const safeLabel = escapeHtml(label);
+      const icon = ICONS[iconName] || '';
+      if (!href) {
+        return `<a class="icon-link" aria-disabled="true" aria-label="${safeLabel}" title="${safeLabel}">${icon}</a>`;
+      }
+      return `<a class="icon-link" href="${escapeHtml(href)}" target="_blank" rel="noreferrer" aria-label="${safeLabel}" title="${safeLabel}">${icon}</a>`;
+    }
+
+    function iconButton(id, label, iconName) {
+      const safeId = escapeHtml(id);
+      const safeLabel = escapeHtml(label);
+      const icon = ICONS[iconName] || '';
+      return `<button type="button" class="icon-button" id="${safeId}" aria-label="${safeLabel}" title="${safeLabel}">${icon}</button>`;
+    }
+
+    function setSourceVisible(visible) {
+      state.sourceVisible = Boolean(visible);
+      localStorage.setItem(SOURCE_VISIBLE_KEY, state.sourceVisible ? '1' : '0');
+      els.mainPanels.classList.toggle('source-hidden', !state.sourceVisible);
+      els.sourceToggle.setAttribute('aria-pressed', state.sourceVisible ? 'true' : 'false');
+      if (!state.sourceVisible && state.mobileTab === 'source') {
+        state.mobileTab = 'editor';
+      }
+      updateMobileTabs();
+    }
+
+    function renderArticleList() {
+      els.articleList.classList.toggle('selecting', state.selectMode);
+      if (!state.articles.length) {
+        els.articleList.innerHTML = '<div class="empty">記事がありません</div>';
+        return;
+      }
+
+      els.articleList.innerHTML = sortedArticles().map((article) => {
+        const isActive = state.selectedArticle?.id === article.id;
+        const isSelected = state.selectedArticleIds.has(article.id);
+        const fallbackDate = formatDate(article.lastModified);
+        const discordDate = formatDiscordDate(article.discordPostedAt);
+        const sourceDate = formatDiscordDate(article.sourcePublishedAt);
+        const timeLabel = discordDate
+          ? `${discordDate} 投稿`
+          : sourceDate
+            ? `${sourceDate} 投稿`
+            : `更新: ${fallbackDate || '-'}`;
+        return `
+          <button type="button" class="article-row ${isActive ? 'active' : ''} ${isSelected ? 'selected' : ''}" data-article-id="${escapeHtml(article.id)}">
+            <span class="article-check" aria-hidden="true">${isSelected ? '<svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg>' : ''}</span>
+            <span class="article-row-main">
+              <span class="article-title">${escapeHtml(articleTitle(article))}</span>
+              <span class="article-meta article-time">${escapeHtml(timeLabel)}</span>
+            </span>
+          </button>
+        `;
+      }).join('');
+
+      els.articleList.querySelectorAll('[data-article-id]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const article = state.articles.find((item) => item.id === button.dataset.articleId);
+          if (!article) return;
+          if (state.selectMode) {
+            toggleArticleSelection(article.id);
+            return;
+          }
+          selectArticle(article).catch((error) => setStatus(error.message, true));
+        });
+        button.addEventListener('contextmenu', (event) => {
+          const article = state.articles.find((item) => item.id === button.dataset.articleId);
+          if (article) openArticleContextMenu(event, article);
+        });
+      });
+    }
+
+    function setSelectionStatus() {
+      const count = state.selectedArticleIds.size;
+      setStatus(count ? `${count}件を選択中` : '選択モードです');
+    }
+
+    function enterSelectMode(article) {
+      state.selectMode = true;
+      state.selectedArticleIds = new Set([article.id]);
+      closeArticleContextMenu();
+      renderArticleList();
+      setSelectionStatus();
+    }
+
+    function clearSelectMode() {
+      state.selectMode = false;
+      state.selectedArticleIds.clear();
+      renderArticleList();
+      setStatus('選択を解除しました');
+    }
+
+    function toggleArticleSelection(articleId) {
+      if (state.selectedArticleIds.has(articleId)) {
+        state.selectedArticleIds.delete(articleId);
+      } else {
+        state.selectedArticleIds.add(articleId);
+      }
+      renderArticleList();
+      setSelectionStatus();
+    }
+
+    function contextArticle() {
+      return state.articles.find((article) => article.id === state.contextArticleId) || null;
+    }
+
+    function closeArticleContextMenu() {
+      els.articleContextMenu.hidden = true;
+      state.contextArticleId = '';
+    }
+
+    function openArticleContextMenu(event, article) {
+      event.preventDefault();
+      event.stopPropagation();
+
+      const menuWidth = 220;
+      const menuHeight = 252;
+      const x = Math.max(8, Math.min(event.clientX, window.innerWidth - menuWidth - 8));
+      const y = Math.max(8, Math.min(event.clientY, window.innerHeight - menuHeight - 8));
+
+      state.contextArticleId = article.id;
+      els.contextOpenOneDriveButton.disabled = !article.webUrl;
+      els.contextOpenExplorerButton.disabled = !article.name;
+      els.articleContextMenu.style.left = `${x}px`;
+      els.articleContextMenu.style.top = `${y}px`;
+      els.articleContextMenu.hidden = false;
+    }
+
+    function clearArticlePanels() {
+      state.selectedArticle = null;
+      state.frontmatterContent = '';
+      state.editorContent = '';
+      state.sourceContent = '';
+      state.sourceMeta = null;
+      state.dirty = false;
+      els.editor.value = '';
+      els.editorTitle.textContent = 'エディター';
+      els.sourceLinks.innerHTML = '';
+      els.sourceBody.innerHTML = '<div class="empty">記事を選択してください</div>';
+      els.preview.innerHTML = '<div class="empty">記事を選択してください</div>';
+      updateEditorMeta();
+      renderEditorLinks();
+      setMobileTab('editor');
+    }
+
+    function duplicateName(name) {
+      return `コピー_${name || '無題.md'}`;
+    }
+
+    async function duplicateArticle(article) {
+      if (!article) return;
+      closeArticleContextMenu();
+      setStatus('記事を複製中');
+      const newName = duplicateName(article.name);
+      const response = await fetch(apiUrl('articles'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fileId: article.id,
+          newName,
+          folderPath: article.path || '',
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || '複製に失敗しました');
+
+      state.articles = [
+        {
+          ...article,
+          id: payload.id || '',
+          name: payload.name || newName,
+          webUrl: payload.webUrl || '',
+          lastModified: payload.lastModified || new Date().toISOString(),
+          size: payload.size || article.size || 0,
+        },
+        ...state.articles,
+      ];
+      renderArticleList();
+      setStatus('記事を複製しました');
+    }
+
+    async function deleteArticle(article) {
+      if (!article) return;
+      closeArticleContextMenu();
+      const label = articleTitle(article);
+      if (!window.confirm(`「${label}」を削除します。この操作は取り消せません。`)) return;
+
+      setStatus('記事を削除中');
+      const response = await fetch(apiUrl('articles'), {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fileId: article.id }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || '削除に失敗しました');
+
+      const wasSelected = state.selectedArticle?.id === article.id;
+      state.articles = state.articles.filter((item) => item.id !== article.id);
+      state.selectedArticleIds.delete(article.id);
+
+      if (state.selectedArticleIds.size === 0) state.selectMode = false;
+      renderArticleList();
+
+      if (wasSelected) {
+        const nextArticle = sortedArticles()[0] || null;
+        if (nextArticle) {
+          await selectArticle(nextArticle);
+        } else {
+          clearArticlePanels();
+        }
+      }
+
+      setStatus('記事を削除しました');
+    }
+
+    function openOneDriveArticle(article) {
+      if (!article?.webUrl) return;
+      window.open(article.webUrl, '_blank', 'noopener,noreferrer');
+      closeArticleContextMenu();
+    }
+
+    function openExplorerArticle(article) {
+      if (!article) return;
+      const localPath = ['X投稿', article.path || ''].filter(Boolean).join('/');
+      if (article.webUrl) {
+        window.open(article.webUrl, '_blank', 'noopener,noreferrer');
+      }
+      closeArticleContextMenu();
+      setStatus('エクスプローラーで表示します');
+    }
+
+    function renderSourcePanel() {
+      const item = state.sourceMeta;
+      if (!item) {
+        els.sourceLinks.innerHTML = '';
+        els.sourceBody.innerHTML = '<div class="empty">元投稿がありません</div>';
+        return;
+      }
+
+      const sourcePostedAt = formatDiscordDate(item.observedAt || item.discordPostedAt);
+      const stats = [
+        ['投稿者', item.authorName || item.authorUsername || '-'],
+        ['Discord掲載', sourcePostedAt ? `${sourcePostedAt} 投稿` : '-'],
+        ['いいね', item.favoriteCount ?? item.likeCount ?? 0],
+        ['リポスト', item.repostCount ?? item.retweetCount ?? 0],
+        ['状態', item.articleStatus || item.status || '-'],
+      ];
+
+      els.sourceLinks.innerHTML = [
+        iconButton('copySourceButton', '元投稿をコピー', 'copy'),
+        iconLink(item.postUrl || item.xUrl || item.url, 'Xを開く', 'x'),
+        iconLink(item.discordJumpUrl || item.discordUrl, 'Discordを開く', 'discord'),
+      ].join('');
+      els.sourceLinks.querySelector('#copySourceButton')?.addEventListener('click', () => {
+        copyText(state.sourceContent, '元投稿をコピーしました').catch((error) => setStatus(error.message, true));
+      });
+
+      els.sourceBody.innerHTML = `
+        <div class="meta-grid">
+          ${stats.map(([label, value]) => `
+            <div class="meta-cell">
+              <strong>${escapeHtml(label)}</strong>
+              <span>${escapeHtml(String(value))}</span>
+            </div>
+          `).join('')}
+        </div>
+        <div class="markdown">${renderMarkdown(state.sourceContent)}</div>
+      `;
+    }
+
+    function renderEditorLinks() {
+      const articleUrl = state.sourceMeta?.articleWebUrl || state.selectedArticle?.webUrl || '';
+      els.editorLinks.innerHTML = iconLink(articleUrl, 'OneDrive記事', 'onedrive');
+    }
+
+    function updateEditorMeta() {
+      const count = els.editor.value.length;
+      els.charCount.textContent = `${count.toLocaleString('ja-JP')}字`;
+      els.dirtyState.textContent = state.dirty ? '未保存' : '保存済み';
+      els.editorFooter.textContent = 'Ctrl+S / Command+S で保存';
+    }
+
+    function renderPreview(forceOgp = false) {
+      state.editorContent = els.editor.value;
+      els.preview.innerHTML = renderMarkdown(state.editorContent);
+      updateEditorMeta();
+      queueOgpCards(forceOgp);
+    }
+    async function fetchArticles(forceReload = false) {
+      setStatus(forceReload ? 'OneDriveを再読み込み中' : '記事一覧を取得中', false, forceReload ? 'info' : '');
+      const previousId = state.selectedArticle?.id;
+      const response = await fetch(apiUrl('articles', { refresh: Date.now() }), { cache: 'no-store' });
+      if (!response.ok) throw new Error('記事一覧の取得に失敗しました');
+      const data = await response.json();
+      state.articles = data.articles || [];
+      state.selectedArticle = previousId ? state.articles.find((article) => article.id === previousId) || null : null;
+      renderArticleList();
+      setStatus(forceReload ? `OneDrive再読み込み完了 ${state.articles.length}件` : `記事一覧 ${state.articles.length}件`, false, forceReload ? 'success' : '');
+      const firstArticle = sortedArticles()[0];
+      if (!state.selectedArticle && firstArticle) {
+        await selectArticle(firstArticle);
+      } else if (state.selectedArticle) {
+        await selectArticle(state.selectedArticle);
+      }
+    }
+
+    async function selectArticle(article) {
+      state.selectedArticle = article;
+      state.dirty = false;
+      renderArticleList();
+      renderEditorLinks();
+      els.editorTitle.textContent = articleTitle(article);
+      setStatus('記事本文を取得中');
+
+      const [articleResponse, sourceResponse] = await Promise.all([
+        fetch(apiUrl('articles', { id: article.id }), { cache: 'no-store' }),
+        fetch(apiUrl('index', { articleId: article.id }), { cache: 'no-store' }),
+      ]);
+
+      if (!articleResponse.ok) throw new Error('記事本文の取得に失敗しました');
+      const articleData = await articleResponse.json();
+      state.frontmatterContent = articleData.frontmatter || '';
+      state.editorContent = articleData.body || articleData.content || '';
+      els.editor.value = state.editorContent;
+
+      if (sourceResponse.ok) {
+        const sourceData = await sourceResponse.json();
+        state.sourceMeta = sourceData.item || null;
+        state.sourceContent = sourceData.sourceContent || '';
+      } else {
+        state.sourceMeta = null;
+        state.sourceContent = '';
+      }
+
+      renderSourcePanel();
+      renderEditorLinks();
+      renderPreview(false);
+      if (isMobileLayout()) {
+        setMobileSidebarOpen(false);
+        setMobileTab('editor');
+      }
+      void fetchNoteDraftUrl(article.id);
+      setStatus('記事を読み込みました');
+    }
+
+    async function saveCurrentArticle() {
+      if (!state.selectedArticle) {
+        setStatus('保存対象の記事が未選択です', true, 'error');
+        return false;
+      }
+
+      setStatus('保存中', false, 'info');
+      const response = await fetch(apiUrl('articles'), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filename: state.selectedArticle.name,
+          fileId: state.selectedArticle.id,
+          content: composeMarkdownDocument(state.frontmatterContent, els.editor.value),
+        }),
+      });
+
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || '保存に失敗しました');
+      }
+
+      const payload = await response.json();
+      state.selectedArticle = {
+        ...state.selectedArticle,
+        id: payload.id || state.selectedArticle.id,
+        name: payload.name || state.selectedArticle.name,
+        webUrl: payload.webUrl || state.selectedArticle.webUrl,
+        lastModified: payload.lastModified || new Date().toISOString(),
+      };
+      state.dirty = false;
+      updateEditorMeta();
+      renderEditorLinks();
+      renderArticleList();
+      setStatus('保存しました', false, 'success');
+      return true;
+    }
+
+    async function triggerWorkflow(mode, statusMessage, errorMessage, successMessage) {
+      setStatus(statusMessage, false, 'info');
+      const response = await fetch(apiUrl('trigger'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode, max_items: 0 }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || errorMessage);
+      setStatus(payload.message || successMessage || statusMessage.replace('実行中', '起動しました'), false, 'success');
+    }
+
+    async function triggerQueue() {
+      return triggerWorkflow('process_queue', 'QUEを起動中', 'QUEの起動に失敗しました', 'QUEを起動しました');
+    }
+
+    async function triggerPipeline() {
+      return triggerWorkflow('full_pipeline', 'ALLを起動中', 'ALLの起動に失敗しました', 'ALLを起動しました');
+    }
+
+    async function triggerNoteDraft() {
+      const selectedIds = state.selectMode ? Array.from(state.selectedArticleIds) : [];
+      const targetIds = selectedIds.length ? selectedIds : (state.selectedArticle ? [state.selectedArticle.id] : []);
+
+      if (!targetIds.length) {
+        setStatus('Note対象の記事が未選択です', true, 'error');
+        return;
+      }
+
+      if (state.dirty && state.selectedArticle && targetIds.includes(state.selectedArticle.id)) {
+        const saved = await saveCurrentArticle();
+        if (!saved) return;
+      }
+
+      setStatus('Noteを起動中', false, 'info');
+      const response = await fetch('/api/note-draft', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fileIds: targetIds, noTopImage: true, noteTarget: 'xpost_tech' }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload.success === false) {
+        throw new Error(payload.error || payload.message || 'Noteの起動に失敗しました');
+      }
+      setStatus(`${targetIds.length}件のNoteを実行中です。URLを確認します`, false, 'success');
+      if (state.selectMode) {
+        state.selectMode = false;
+        state.selectedArticleIds.clear();
+        renderArticleList();
+      }
+      await pollNoteDraftUrls(targetIds);
+    }
+
+    async function fetchNoteDraftUrl(fileId) {
+      if (!fileId) return null;
+      try {
+        const response = await fetch(`/api/note-draft?fileId=${encodeURIComponent(fileId)}`, { cache: 'no-store' });
+        if (!response.ok) return null;
+        const payload = await response.json().catch(() => ({}));
+        const url = payload.url || null;
+        if (url) {
+          state.noteDraftUrls[fileId] = url;
+          persistNoteDraftUrls();
+        }
+        return url;
+      } catch {
+        return null;
+      }
+    }
+
+    async function pollNoteDraftUrl(fileId) {
+      for (let attempt = 0; attempt < 24; attempt += 1) {
+        const url = await fetchNoteDraftUrl(fileId);
+        if (url) {
+          setStatus(`note下書きURL: ${url}`);
+          showToast('Note URLを開きました', 'success');
+          window.open(url, '_blank', 'noopener,noreferrer');
+          return url;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+      }
+      setStatus('Noteは実行中です。GitHub Actions 完了後に再確認してください', false, 'info');
+      return null;
+    }
+
+    async function pollNoteDraftUrls(fileIds) {
+      const ids = Array.isArray(fileIds) ? fileIds : [fileIds];
+      if (ids.length === 1) return pollNoteDraftUrl(ids[0]);
+
+      const pending = new Set(ids);
+      for (let attempt = 0; attempt < 24 && pending.size > 0; attempt += 1) {
+        for (const fileId of [...pending]) {
+          const url = await fetchNoteDraftUrl(fileId);
+          if (url) pending.delete(fileId);
+        }
+        setStatus(pending.size ? `note下書きURL確認中 残り${pending.size}件` : 'note下書きURLを取得しました');
+        if (pending.size === 0) {
+          showToast('Note URLを取得しました', 'success');
+          return true;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+      }
+      setStatus('Noteは実行中です。GitHub Actions 完了後に再確認してください', false, 'info');
+      return false;
+    }
+
+    async function copyText(text, doneMessage) {
+      await navigator.clipboard.writeText(text);
+      setStatus(doneMessage, false, 'success');
+    }
+    function buildOgpCard(href, title, description, image, domain) {
+      const card = document.createElement('a');
+      card.className = 'ogp-card';
+      card.href = href;
+      card.target = '_blank';
+      card.rel = 'noopener noreferrer';
+      card.innerHTML = [
+        '<div class="ogp-card-body">',
+        domain ? `<div class="ogp-card-domain">${escapeHtml(domain)}</div>` : '',
+        title ? `<div class="ogp-card-title">${escapeHtml(title)}</div>` : '',
+        description ? `<div class="ogp-card-desc">${escapeHtml(description)}</div>` : '',
+        '</div>',
+        image ? `<img class="ogp-card-image" src="${escapeHtml(image)}" alt="" loading="lazy" onerror="this.style.display='none'" />` : '',
+      ].join('');
+      return card;
+    }
+
+    function insertOgpCard(anchor, card) {
+      if (!anchor?.isConnected || anchor.classList.contains('ogp-card')) return;
+      if (anchor.nextElementSibling?.classList?.contains('ogp-card')) return;
+      anchor.insertAdjacentElement('afterend', card);
+    }
+
+    function normalizeUrlForOgp(href) {
+      try {
+        const url = new URL(href);
+        if (!/^https?:$/.test(url.protocol)) return '';
+        return url.toString();
+      } catch {
+        return '';
+      }
+    }
+
+    function queueOgpCards(force = false) {
+      const runId = ++state.ogpRunId;
+      els.previewFooter.textContent = 'OGP待機中';
+      window.requestAnimationFrame(() => applyOgpCards(runId, force));
+    }
+
+    async function applyOgpCards(runId, force = false) {
+      const links = [...els.preview.querySelectorAll('a[href^="http"]:not(.ogp-card)')]
+        .map((anchor) => ({ anchor, href: normalizeUrlForOgp(anchor.href) }))
+        .filter((entry) => entry.href);
+
+      if (!links.length) {
+        els.previewFooter.textContent = 'OGP対象なし';
+        return;
+      }
+
+      if (force) {
+        links.forEach(({ anchor }) => anchor.removeAttribute('data-ogp-processed'));
+      }
+
+      let processed = 0;
+      for (const { anchor, href } of links) {
+        if (runId !== state.ogpRunId) return;
+        if (!anchor.isConnected || anchor.dataset.ogpProcessed) continue;
+        anchor.dataset.ogpProcessed = '1';
+
+        try {
+          let ogp = state.ogpCache[href];
+          if (!ogp || force) {
+            const response = await fetch(`/api/ogp?url=${encodeURIComponent(href)}`, { cache: 'no-store' });
+            if (!response.ok) throw new Error(`OGP ${response.status}`);
+            ogp = await response.json();
+            state.ogpCache[href] = ogp;
+          }
+          const domain = ogp.domain || new URL(href).hostname;
+          insertOgpCard(anchor, buildOgpCard(href, ogp.title || href, ogp.description || '', ogp.image || '', domain));
+          processed += 1;
+          els.previewFooter.textContent = `OGP ${processed}/${links.length}`;
+        } catch {
+          anchor.removeAttribute('data-ogp-processed');
+          const domain = new URL(href).hostname;
+          insertOgpCard(anchor, buildOgpCard(href, domain, '', '', domain));
+        }
+      }
+
+      els.previewFooter.textContent = processed ? `OGP展開 ${processed}件` : 'OGP対象なし';
+    }
+
+    function refreshOgp() {
+      els.preview.querySelectorAll('.ogp-card').forEach((card) => card.remove());
+      els.preview.querySelectorAll('a[data-ogp-processed]').forEach((anchor) => anchor.removeAttribute('data-ogp-processed'));
+      renderPreview(true);
+      setStatus('OGPを更新します', false, 'info');
+    }
+
+    function memoKeys() {
+      return Object.keys(state.affiliateMemos)
+        .sort((a, b) => Number(a.replace('memo', '')) - Number(b.replace('memo', '')));
+    }
+
+    function renderMemoTabs() {
+      const keys = memoKeys();
+      if (!keys.includes(state.activeAffiliateKey)) state.activeAffiliateKey = keys[0] || 'memo1';
+      els.memoTabs.innerHTML = keys.map((key) => `
+        <button type="button" class="memo-tab ${key === state.activeAffiliateKey ? 'active' : ''}" data-memo-key="${escapeHtml(key)}">
+          ${escapeHtml(key.toUpperCase())}
+        </button>
+      `).join('');
+      els.memoTabs.querySelectorAll('[data-memo-key]').forEach((button) => {
+        button.addEventListener('click', () => {
+          syncAffiliateEditorToState();
+          state.activeAffiliateKey = button.dataset.memoKey;
+          els.affiliateEditor.value = state.affiliateMemos[state.activeAffiliateKey] || '';
+          renderMemoTabs();
+        });
+      });
+    }
+
+    function syncAffiliateEditorToState() {
+      if (!state.activeAffiliateKey) return;
+      state.affiliateMemos[state.activeAffiliateKey] = els.affiliateEditor.value;
+    }
+
+    async function fetchAffiliateMemos() {
+      setAffiliateStatus('読み込み中');
+      const response = await fetch(apiUrl('affiliate'), { cache: 'no-store' });
+      if (!response.ok) throw new Error('tech affiliateの取得に失敗しました');
+      const payload = await response.json();
+      state.affiliateMemos = payload.memos || { memo1: '' };
+      state.activeAffiliateKey = memoKeys()[0] || 'memo1';
+      state.affiliateDirty = false;
+      renderMemoTabs();
+      els.affiliateEditor.value = state.affiliateMemos[state.activeAffiliateKey] || '';
+      setAffiliateStatus('読み込みました');
+    }
+
+    async function saveAffiliateMemos() {
+      syncAffiliateEditorToState();
+      setAffiliateStatus('保存中');
+      const response = await fetch(apiUrl('affiliate'), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ memos: state.affiliateMemos }),
+      });
+      if (!response.ok) throw new Error('tech affiliateの保存に失敗しました');
+      state.affiliateDirty = false;
+      setAffiliateStatus('保存しました');
+    }
+
+    function openAffiliateModal() {
+      els.affiliateModalBackdrop.classList.add('open');
+      els.affiliateModalBackdrop.setAttribute('aria-hidden', 'false');
+      if (!memoKeys().length || (memoKeys().length === 1 && state.affiliateMemos.memo1 === '')) {
+        fetchAffiliateMemos().catch((error) => setAffiliateStatus(error.message, true));
+      } else {
+        renderMemoTabs();
+        els.affiliateEditor.value = state.affiliateMemos[state.activeAffiliateKey] || '';
+      }
+      els.affiliateEditor.focus();
+    }
+
+    function closeAffiliateModal() {
+      syncAffiliateEditorToState();
+      els.affiliateModalBackdrop.classList.remove('open');
+      els.affiliateModalBackdrop.setAttribute('aria-hidden', 'true');
+    }
+
+    function addMemo() {
+      syncAffiliateEditorToState();
+      const nums = memoKeys().map((key) => Number(key.replace('memo', ''))).filter(Boolean);
+      const next = `memo${Math.max(0, ...nums) + 1}`;
+      state.affiliateMemos[next] = '';
+      state.activeAffiliateKey = next;
+      state.affiliateDirty = true;
+      renderMemoTabs();
+      els.affiliateEditor.value = '';
+      els.affiliateEditor.focus();
+    }
+
+    function activeAffiliateText() {
+      syncAffiliateEditorToState();
+      return String(state.affiliateMemos[state.activeAffiliateKey] || '').trim();
+    }
+
+    function insertAffiliateAtEnd() {
+      const text = activeAffiliateText();
+      if (!text) {
+        setStatus('挿入するアフィリエイトテキストが空です', true, 'error');
+        return;
+      }
+      if (!state.selectedArticle) {
+        setStatus('記事が未選択です', true, 'error');
+        return;
+      }
+      const current = els.editor.value.trimEnd();
+      els.editor.value = current.includes(text) ? current : `${current}\n\n---\n\n${text}\n`;
+      state.dirty = true;
+      renderPreview(false);
+      setStatus(`${state.activeAffiliateKey.toUpperCase()}を記事末尾へ挿入しました`, false, 'success');
+    }
+    function applyResizer(handle, target, cssVar, minPx, maxPx) {
+      handle.addEventListener('pointerdown', (event) => {
+        handle.classList.add('dragging');
+        const startX = event.clientX;
+        const startWidth = target.getBoundingClientRect().width;
+
+        function onMove(moveEvent) {
+          const nextWidth = Math.min(Math.max(startWidth + (moveEvent.clientX - startX), minPx), maxPx);
+          document.documentElement.style.setProperty(cssVar, `${nextWidth}px`);
+        }
+
+        function onUp() {
+          handle.classList.remove('dragging');
+          window.removeEventListener('pointermove', onMove);
+          window.removeEventListener('pointerup', onUp);
+        }
+
+        window.addEventListener('pointermove', onMove);
+        window.addEventListener('pointerup', onUp);
+      });
+    }
+
+    function applyEditorResizer(handle) {
+      handle.addEventListener('pointerdown', (event) => {
+        handle.classList.add('dragging');
+        const container = handle.parentElement;
+        const startX = event.clientX;
+        const startWidth = els.editorPanel.getBoundingClientRect().width;
+        const totalWidth = container.getBoundingClientRect().width || window.innerWidth;
+
+        function onMove(moveEvent) {
+          const nextWidth = Math.min(Math.max(startWidth + (moveEvent.clientX - startX), 420), Math.max(460, totalWidth - 360));
+          const percent = (nextWidth / totalWidth) * 100;
+          document.documentElement.style.setProperty('--editor-width', `${percent}%`);
+        }
+
+        function onUp() {
+          handle.classList.remove('dragging');
+          window.removeEventListener('pointermove', onMove);
+          window.removeEventListener('pointerup', onUp);
+        }
+
+        window.addEventListener('pointermove', onMove);
+        window.addEventListener('pointerup', onUp);
+      });
+    }
+
+function bindEvents() {
+      const bindAction = (button, handler) => {
+        button?.addEventListener('click', () => {
+          pulseButton(button);
+          Promise.resolve(handler()).catch((error) => setStatus(error.message, true, 'error'));
+        });
+      };
+
+      bindAction(els.saveButton, () => saveCurrentArticle());
+      bindAction(els.noteDraftButton, () => triggerNoteDraft());
+      bindAction(els.queueButton, () => triggerQueue());
+      bindAction(els.pipelineButton, () => triggerPipeline());
+      bindAction(els.refreshButton, () => fetchArticles(true));
+      bindAction(els.refreshOgpButton, () => refreshOgp());
+      bindAction(els.copyEditorButton, () => copyText(els.editor.value, '本文をコピーしました'));
+      bindAction(els.copyPreviewButton, () => copyText(els.editor.value, 'Markdownをコピーしました'));
+
+      els.mobileMenuButton?.addEventListener('click', () => {
+        pulseButton(els.mobileMenuButton);
+        setMobileSidebarOpen(!state.mobileSidebarOpen);
+      });
+      els.mobileOverlay?.addEventListener('click', () => setMobileSidebarOpen(false));
+      els.mobileSidebarCloseButton?.addEventListener('click', () => {
+        pulseButton(els.mobileSidebarCloseButton);
+        setMobileSidebarOpen(false);
+      });
+      [els.sourceTabButton, els.editorTabButton, els.previewTabButton].forEach((button) => {
+        button?.addEventListener('click', () => {
+          pulseButton(button);
+          setMobileTab(button.dataset.mobileTab || 'editor');
+        });
+      });
+      els.insertAffiliateButton.addEventListener('click', () => {
+        pulseButton(els.insertAffiliateButton);
+        insertAffiliateAtEnd();
+      });
+      els.sortToggle.addEventListener('click', () => {
+        pulseButton(els.sortToggle);
+        state.sortOrder = state.sortOrder === 'asc' ? 'desc' : 'asc';
+        localStorage.setItem(SORT_ORDER_KEY, state.sortOrder);
+        updateSortButton();
+        renderArticleList();
+        setStatus(state.sortOrder === 'asc' ? '新着順を昇順にしました' : '新着順を降順にしました', false, 'info');
+      });
+      els.sourceToggle.addEventListener('click', () => {
+        pulseButton(els.sourceToggle);
+        setSourceVisible(!state.sourceVisible);
+        setStatus(state.sourceVisible ? 'Sourceを表示しました' : 'Sourceを非表示にしました', false, 'info');
+      });
+
+      els.editor.addEventListener('input', () => {
+        state.dirty = true;
+        renderPreview(false);
+      });
+
+      window.addEventListener('keydown', (event) => {
+        const isSaveShortcut = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's';
+        if (isSaveShortcut) {
+          event.preventDefault();
+          saveCurrentArticle().catch((error) => setStatus(error.message, true, 'error'));
+          return;
+        }
+        if (event.key === 'Escape') {
+          if (state.mobileSidebarOpen) {
+            setMobileSidebarOpen(false);
+          } else if (!els.articleContextMenu.hidden) closeArticleContextMenu();
+          else if (state.selectMode) clearSelectMode();
+        }
+      });
+
+      window.addEventListener('resize', syncResponsiveChrome);
+
+      window.addEventListener('click', (event) => {
+        if (!els.articleContextMenu.hidden && !els.articleContextMenu.contains(event.target)) {
+          closeArticleContextMenu();
+        }
+      });
+      window.addEventListener('contextmenu', (event) => {
+        if (!els.articleContextMenu.hidden && !els.articleContextMenu.contains(event.target)) {
+          closeArticleContextMenu();
+        }
+      });
+
+      els.articleContextMenu.addEventListener('click', (event) => event.stopPropagation());
+      els.contextSelectButton.addEventListener('click', () => {
+        const article = contextArticle();
+        if (article) enterSelectMode(article);
+      });
+      els.contextDuplicateButton.addEventListener('click', () => {
+        pulseButton(els.contextDuplicateButton);
+        duplicateArticle(contextArticle()).catch((error) => setStatus(error.message, true, 'error'));
+      });
+      els.contextDeleteButton.addEventListener('click', () => {
+        pulseButton(els.contextDeleteButton);
+        deleteArticle(contextArticle()).catch((error) => setStatus(error.message, true, 'error'));
+      });
+      els.contextOpenOneDriveButton.addEventListener('click', () => openOneDriveArticle(contextArticle()));
+      els.contextOpenExplorerButton.addEventListener('click', () => openExplorerArticle(contextArticle()));
+
+      els.affiliateLauncher.addEventListener('click', () => {
+        pulseButton(els.affiliateLauncher);
+        openAffiliateModal();
+      });
+      els.closeAffiliateButton.addEventListener('click', () => {
+        pulseButton(els.closeAffiliateButton);
+        closeAffiliateModal();
+      });
+      els.affiliateModalBackdrop.addEventListener('click', (event) => {
+        if (event.target === els.affiliateModalBackdrop) closeAffiliateModal();
+      });
+      els.reloadAffiliateButton.addEventListener('click', () => {
+        pulseButton(els.reloadAffiliateButton);
+        fetchAffiliateMemos().catch((error) => setAffiliateStatus(error.message, true));
+      });
+      els.saveAffiliateButton.addEventListener('click', () => {
+        pulseButton(els.saveAffiliateButton);
+        saveAffiliateMemos().catch((error) => setAffiliateStatus(error.message, true));
+      });
+      els.addMemoButton.addEventListener('click', () => {
+        pulseButton(els.addMemoButton);
+        addMemo();
+      });
+      els.insertAffiliateFromModalButton.addEventListener('click', () => {
+        pulseButton(els.insertAffiliateFromModalButton);
+        insertAffiliateAtEnd();
+      });
+      els.affiliateEditor.addEventListener('input', () => {
+        state.affiliateDirty = true;
+        syncAffiliateEditorToState();
+        setAffiliateStatus('未保存');
+      });
+
+      applyResizer(els.sidebarHandle, els.sidebar, '--sidebar-width', 240, 520);
+      applyResizer(els.sourceHandle, els.sourcePanel, '--source-width', 260, 560);
+      applyEditorResizer(els.editorHandle);
+    }
+
+    async function init() {
+      initIcons();
+      bindEvents();
+      setSourceVisible(state.sourceVisible);
+      syncResponsiveChrome();
+      updateSortButton();
+      updateEditorMeta();
+      await Promise.all([
+        fetchArticles(),
+        fetchAffiliateMemos().catch((error) => setAffiliateStatus(error.message, true)),
+      ]);
+    }
+
+    init().catch((error) => setStatus(error.message, true));
+  </script>
+</body>
+</html>

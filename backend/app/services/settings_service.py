@@ -17,7 +17,7 @@ MODEL_PRESET_CANDIDATES: dict[str, list[ModelArch]] = {
     "small-streaming": [ModelArch.SMALL_STREAMING],
     "medium-streaming": [ModelArch.MEDIUM_STREAMING],
 }
-FASTER_WHISPER_MODELS = ["tiny", "base", "small", "medium", "large-v3"]
+FASTER_WHISPER_MODELS = ["small", "tiny", "base", "medium", "large-v3"]
 BATCH_TRANSCRIPTION_ENGINES = ["faster-whisper", "moonshine"]
 
 

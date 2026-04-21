@@ -23,8 +23,10 @@ set "VOICE2TEXT_MODELS_ROOT=%LOCAL_BASE%\models"
 python "%ROOT%backend\scripts\bootstrap_models.py"
 
 set "VOICE2TEXT_FASTER_WHISPER_ROOT=%LOCAL_BASE%\faster_whisper_models"
-set "VOICE2TEXT_FASTER_WHISPER_MODEL=base"
-python "%ROOT%backend\scripts\bootstrap_faster_whisper.py"
+for %%M in (tiny base small medium large-v3) do (
+  set "VOICE2TEXT_FASTER_WHISPER_MODEL=%%M"
+  python "%ROOT%backend\scripts\bootstrap_faster_whisper.py"
+)
 
 echo.
 echo Voice2Text setup complete.
