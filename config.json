@@ -7,7 +7,7 @@
   },
   "transcription": {
     "language": "ja",
-    "modelPreset": "tiny",
+    "modelPreset": "base",
     "maxSpeakers": 3,
     "updateIntervalMs": 5000,
     "enableWordTimestamps": false
@@ -32,9 +32,9 @@
     "model": "gemma4:e2b",
     "contextLines": 3,
     "contextBeforeLines": 3,
-    "contextAfterLines": 2,
-    "debounceMs": 1200,
-    "maxWaitMs": 3000,
-    "completeOnly": false
+    "contextAfterLines": 3,
+    "debounceMs": 5000,
+    "maxWaitMs": 5000,
+    "completeOnly": true
   }
 }

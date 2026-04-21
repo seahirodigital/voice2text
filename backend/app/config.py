@@ -38,10 +38,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "model": "gemma4:e2b",
         "contextLines": 3,
         "contextBeforeLines": 3,
-        "contextAfterLines": 2,
-        "debounceMs": 1200,
-        "maxWaitMs": 3000,
-        "completeOnly": False,
+        "contextAfterLines": 3,
+        "debounceMs": 5000,
+        "maxWaitMs": 5000,
+        "completeOnly": True,
     },
 }
 

@@ -1,9 +1,11 @@
 import { AnimatePresence, motion } from "framer-motion";
 import {
+  AlignLeft,
   Check,
   CirclePause,
   Copy,
   Download,
+  FileText,
   FolderOpen,
   LoaderCircle,
   Mic,
@@ -55,8 +57,12 @@ const SEGMENT_AUDIO_PREROLL_SECONDS = 0.2;
 const INPUT_GAIN_MIN_DB = 0;
 const INPUT_GAIN_MAX_DB = 24;
 const INPUT_GAIN_STEP_DB = 1;
+const INPUT_GAIN_DEFAULT_DB = 5;
 const INPUT_GAIN_DIAL_START_DEG = -150;
 const INPUT_GAIN_DIAL_SWEEP_DEG = 270;
+const SIDEBAR_MIN_WIDTH = 240;
+const SIDEBAR_MAX_WIDTH = 520;
+const MINUTES_PANE_MIN_WIDTH = 280;
 const TRANSCRIPT_GRID_CLASS =
   "lg:grid lg:grid-cols-[88px_132px_minmax(0,1fr)_minmax(0,1fr)] lg:gap-4";
 const LLM_MODEL_OPTIONS = ["gemma4:e2b", "gemma4:e4b"];
@@ -90,6 +96,8 @@ interface RecordView {
   durationSeconds: number;
   lineCount: number;
   audioUrl?: string | null;
+  minutesStatus?: "idle" | "processing" | "complete" | "error";
+  minutesUpdatedAt?: string | null;
   summary: string;
   badgeLabel: string;
   kind: "history" | "live";
@@ -172,6 +180,8 @@ function toHistoryRecord(session: SessionSummary): RecordView {
     durationSeconds: session.durationSeconds,
     lineCount: session.lineCount,
     audioUrl: session.audioUrl ?? null,
+    minutesStatus: session.minutesStatus ?? "idle",
+    minutesUpdatedAt: session.minutesUpdatedAt ?? null,
     summary: session.deviceLabel,
     badgeLabel: "Completed",
     kind: "history",
@@ -189,6 +199,10 @@ function toSessionSummary(detail: SessionDetail): SessionSummary {
     lineCount: detail.lineCount,
     title: detail.title,
     audioUrl: detail.audioUrl ?? null,
+    minutesStatus: detail.minutesStatus,
+    minutesUpdatedAt: detail.minutesUpdatedAt,
+    minutesModel: detail.minutesModel,
+    minutesError: detail.minutesError,
   };
 }
 
@@ -228,6 +242,24 @@ function formatHeaderDate(value?: string | null) {
     month: "short",
     day: "numeric",
   }).format(parsed);
+}
+
+function formatSessionTitle(value?: string | null) {
+  const parsed = parseDate(value);
+  const date = parsed ?? new Date();
+  const parts = new Intl.DateTimeFormat("ja-JP", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((entry) => entry.type === type)?.value ?? "";
+  return `${part("year")}/${part("month")}/${part("day")} ${part("hour")}:${part(
+    "minute",
+  )}`;
 }
 
 function formatLongClock(seconds: number) {
@@ -271,6 +303,10 @@ function clampUpdateInterval(value: number) {
 
 function clampInputGainDb(value: number) {
   return Math.min(INPUT_GAIN_MAX_DB, Math.max(INPUT_GAIN_MIN_DB, value));
+}
+
+function clampNumber(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
 }
 
 function dbToLinearGain(db: number) {
@@ -333,6 +369,99 @@ function recordMatchesFilter(record: RecordView, filterText: string) {
   return haystack.includes(query);
 }
 
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function renderMarkdown(markdown: string) {
+  const lines = markdown.split(/\r?\n/);
+  const html: string[] = [];
+  let inList = false;
+
+  const closeList = () => {
+    if (inList) {
+      html.push("</ul>");
+      inList = false;
+    }
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd();
+    if (!line.trim()) {
+      closeList();
+      html.push("<br />");
+      continue;
+    }
+    if (line.startsWith("### ")) {
+      closeList();
+      html.push(`<h3>${escapeHtml(line.slice(4))}</h3>`);
+      continue;
+    }
+    if (line.startsWith("## ")) {
+      closeList();
+      html.push(`<h2>${escapeHtml(line.slice(3))}</h2>`);
+      continue;
+    }
+    if (line.startsWith("# ")) {
+      closeList();
+      html.push(`<h1>${escapeHtml(line.slice(2))}</h1>`);
+      continue;
+    }
+    if (line.startsWith("- ") || line.startsWith("* ")) {
+      if (!inList) {
+        html.push("<ul>");
+        inList = true;
+      }
+      html.push(`<li>${escapeHtml(line.slice(2))}</li>`);
+      continue;
+    }
+    if (line.startsWith("> ")) {
+      closeList();
+      html.push(`<blockquote>${escapeHtml(line.slice(2))}</blockquote>`);
+      continue;
+    }
+    closeList();
+    html.push(`<p>${escapeHtml(line)}</p>`);
+  }
+  closeList();
+  return html.join("");
+}
+
+function refinedBlocksToPlainText(segments: TranscriptSegment[]) {
+  const seen = new Set<string>();
+  return sortSegments(segments)
+    .filter((segment) => {
+      const text = segment.llmText?.trim();
+      if (!text) {
+        return false;
+      }
+      const key = segment.llmBlockId || segment.id;
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    })
+    .map((segment) => segment.llmText?.trim() ?? "")
+    .join("\n\n");
+}
+
+function buildExportText(segments: TranscriptSegment[], minutesMarkdown: string) {
+  const refined = minutesMarkdown.trim() || refinedBlocksToPlainText(segments);
+  const raw = transcriptToPlainText(segments);
+  return [
+    "# 整形済み文章",
+    refined || "整形済み文章はまだありません。",
+    "---",
+    "# 時系列の生データ",
+    raw || "生データはまだありません。",
+  ].join("\n\n");
+}
+
 function App() {
   const [settingsResponse, setSettingsResponse] = useState<SettingsResponse | null>(
     null,
@@ -342,6 +471,11 @@ function App() {
   const [history, setHistory] = useState<SessionSummary[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [timelineSegments, setTimelineSegments] = useState<TranscriptSegment[]>([]);
+  const [minutesDraft, setMinutesDraft] = useState("");
+  const [activeTranscriptView, setActiveTranscriptView] = useState<
+    "realtime" | "minutes"
+  >("realtime");
+  const [showLlmRefined, setShowLlmRefined] = useState(true);
   const [currentAudioUrl, setCurrentAudioUrl] = useState<string | null>(null);
   const [deviceId, setDeviceId] = useState("");
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
@@ -352,11 +486,14 @@ function App() {
   const [savingSettings, setSavingSettings] = useState(false);
   const [choosingRecordingsRoot, setChoosingRecordingsRoot] = useState(false);
   const [openingRecordingId, setOpeningRecordingId] = useState<string | null>(null);
+  const [minutesProcessingIds, setMinutesProcessingIds] = useState<string[]>([]);
   const [copied, setCopied] = useState(false);
   const [editVersion, setEditVersion] = useState(0);
   const [recordFilter, setRecordFilter] = useState("");
   const [updateIntervalDraft, setUpdateIntervalDraft] = useState("");
-  const [inputGainDb, setInputGainDb] = useState(INPUT_GAIN_MIN_DB);
+  const [inputGainDb, setInputGainDb] = useState(INPUT_GAIN_DEFAULT_DB);
+  const [sidebarWidth, setSidebarWidth] = useState(320);
+  const [minutesEditorPercent, setMinutesEditorPercent] = useState(50);
   const [sidebarSelectedRecordIds, setSidebarSelectedRecordIds] = useState<string[]>(
     [],
   );
@@ -392,12 +529,14 @@ function App() {
   const dirtySegmentIdsRef = useRef<Set<string>>(new Set());
   const timelineSegmentsRef = useRef<TranscriptSegment[]>([]);
   const transcriptScrollRef = useRef<HTMLDivElement | null>(null);
+  const recordsPanelRef = useRef<HTMLElement | null>(null);
+  const minutesSplitRef = useRef<HTMLDivElement | null>(null);
   const segmentRowRefs = useRef<Map<string, HTMLElement>>(new Map());
   const lastLiveSegmentIdRef = useRef<string | null>(null);
   const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
   const speakerNameOverridesRef = useRef<Map<number, string>>(new Map());
   const lastSidebarSelectedRecordIdRef = useRef<string | null>(null);
-  const inputGainDbRef = useRef(INPUT_GAIN_MIN_DB);
+  const inputGainDbRef = useRef(INPUT_GAIN_DEFAULT_DB);
   const statusRef = useRef<RecordingStatus>("idle");
   const isLiveSessionRef = useRef(false);
   const pendingLiveTitleRef = useRef<string | null>(null);
@@ -408,10 +547,20 @@ function App() {
   const persistTranscriptRef = useRef<
     (sessionId: string, segments: TranscriptSegment[]) => Promise<void>
   >(async () => {});
+  const minutesSaveTimeoutRef = useRef<number | null>(null);
 
   useEffect(() => {
     timelineSegmentsRef.current = timelineSegments;
   }, [timelineSegments]);
+
+  useEffect(
+    () => () => {
+      if (minutesSaveTimeoutRef.current !== null) {
+        window.clearTimeout(minutesSaveTimeoutRef.current);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     statusRef.current = status;
@@ -475,6 +624,8 @@ function App() {
     startTransition(() => {
       setSelectedSessionId(sessionId);
       setTimelineSegments(sortSegments(detail.segments));
+      setMinutesDraft(detail.minutesMarkdown ?? "");
+      setActiveTranscriptView(detail.minutesMarkdown ? "minutes" : "realtime");
       setCurrentAudioUrl(detail.audioUrl ?? null);
     });
   };
@@ -584,6 +735,8 @@ function App() {
         startTransition(() => {
           setSelectedSessionId(null);
           setTimelineSegments([]);
+          setMinutesDraft("");
+          setActiveTranscriptView("realtime");
           setCurrentAudioUrl(null);
         });
       }
@@ -664,7 +817,13 @@ function App() {
   const handleSocketMessage = async (message: SocketMessage) => {
     if (message.type === "started") {
       clearConnectionTimeout();
-      setCurrentSessionId(String(message.payload.sessionId ?? ""));
+      const sessionId = String(message.payload.sessionId ?? "");
+      const createdAt = String(message.payload.createdAt ?? new Date().toISOString());
+      const title = String(message.payload.title ?? formatSessionTitle(createdAt));
+      setCurrentSessionId(sessionId);
+      setLiveSessionStartedAt(createdAt);
+      setLiveTitleOverride(title);
+      setTitleDraft(title);
       setStatus("recording");
       return;
     }
@@ -683,7 +842,14 @@ function App() {
         const override = speakerNameOverridesRef.current.get(segment.speakerIndex);
         return override ? { ...segment, speakerLabel: override } : segment;
       })();
-      lastLiveSegmentIdRef.current = incoming.id;
+      if (
+        message.type === "line_started" ||
+        message.type === "line_updated" ||
+        message.type === "line_text_changed" ||
+        message.type === "line_completed"
+      ) {
+        lastLiveSegmentIdRef.current = incoming.id;
+      }
       startTransition(() => {
         setTimelineSegments((current) =>
           mergeIncomingSegment(current, incoming, dirtySegmentIdsRef.current),
@@ -812,6 +978,8 @@ function App() {
     isLiveSessionRef.current = true;
     speakerNameOverridesRef.current.clear();
     setTimelineSegments([]);
+    setMinutesDraft("");
+    setActiveTranscriptView("realtime");
     setIsEditingTitle(false);
     setLiveSessionStartedAt(new Date().toISOString());
     setLiveTitleOverride(null);
@@ -1069,14 +1237,17 @@ function App() {
   };
 
   const copyTranscript = async () => {
-    const plainText = transcriptToPlainText(timelineSegmentsRef.current);
+    const plainText =
+      activeTranscriptView === "minutes"
+        ? minutesDraft
+        : transcriptToPlainText(timelineSegmentsRef.current);
     await navigator.clipboard.writeText(plainText);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1600);
   };
 
   const downloadTranscript = () => {
-    const plainText = transcriptToPlainText(timelineSegmentsRef.current);
+    const plainText = buildExportText(timelineSegmentsRef.current, minutesDraft);
     const activeTitle =
       history.find((session) => session.id === selectedSessionId)?.title ??
       (status !== "idle" && status !== "error" ? "live-record" : "transcript");
@@ -1092,7 +1263,10 @@ function App() {
   };
 
   const shareTranscript = async () => {
-    const plainText = transcriptToPlainText(timelineSegmentsRef.current);
+    const plainText =
+      activeTranscriptView === "minutes"
+        ? minutesDraft
+        : transcriptToPlainText(timelineSegmentsRef.current);
     const selectedTitle =
       history.find((session) => session.id === selectedSessionId)?.title ??
       "Voice2Text Transcript";
@@ -1110,6 +1284,103 @@ function App() {
       }
     }
     await copyTranscript();
+  };
+
+  const updateHistoryFromDetail = (detail: SessionDetail) => {
+    setHistory((current) => {
+      const summary = toSessionSummary(detail);
+      const next = current.filter((entry) => entry.id !== detail.id);
+      next.unshift(summary);
+      return next;
+    });
+  };
+
+  const saveMinutesMarkdown = async (sessionId: string, markdown: string) => {
+    const detail = await apiFetch<SessionDetail>(`/api/sessions/${sessionId}/minutes`, {
+      method: "PUT",
+      body: JSON.stringify({ minutesMarkdown: markdown }),
+    });
+    updateHistoryFromDetail(detail);
+    return detail;
+  };
+
+  const scheduleMinutesSave = (markdown: string) => {
+    if (!selectedSessionId || status !== "idle") {
+      return;
+    }
+    if (minutesSaveTimeoutRef.current !== null) {
+      window.clearTimeout(minutesSaveTimeoutRef.current);
+    }
+    const sessionId = selectedSessionId;
+    minutesSaveTimeoutRef.current = window.setTimeout(() => {
+      minutesSaveTimeoutRef.current = null;
+      void saveMinutesMarkdown(sessionId, markdown).catch((saveError) => {
+        setError(
+          saveError instanceof Error
+            ? saveError.message
+            : "Failed to save minutes.",
+        );
+      });
+    }, 800);
+  };
+
+  const onMinutesEdit = (markdown: string) => {
+    setMinutesDraft(markdown);
+    scheduleMinutesSave(markdown);
+  };
+
+  const applyMinutesDetail = (detail: SessionDetail) => {
+    updateHistoryFromDetail(detail);
+    if (detail.id === selectedSessionId) {
+      setTimelineSegments(sortSegments(detail.segments));
+      setMinutesDraft(detail.minutesMarkdown ?? "");
+      setCurrentAudioUrl(detail.audioUrl ?? null);
+      setActiveTranscriptView("minutes");
+    }
+  };
+
+  const generateMinutesForSession = async (sessionId: string) => {
+    setMinutesProcessingIds((current) => [...new Set([...current, sessionId])]);
+    try {
+      const detail = await apiFetch<SessionDetail>(`/api/sessions/${sessionId}/minutes`, {
+        method: "POST",
+      });
+      applyMinutesDetail(detail);
+      await refreshHistory();
+      return detail;
+    } catch (minutesError) {
+      setError(
+        minutesError instanceof Error
+          ? minutesError.message
+          : "Failed to generate minutes.",
+      );
+      throw minutesError;
+    } finally {
+      setMinutesProcessingIds((current) =>
+        current.filter((entry) => entry !== sessionId),
+      );
+    }
+  };
+
+  const generateMinutesForSessions = async (sessionIds: string[]) => {
+    const requested = new Set(sessionIds);
+    const candidates = [...allHistoryRecords]
+      .filter(
+        (record) =>
+          requested.has(record.id) &&
+          record.audioUrl &&
+          (record.minutesStatus ?? "idle") !== "complete",
+      )
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+
+    if (candidates.length === 0) {
+      setError("未処理の録音ファイルがありません。");
+      return;
+    }
+
+    for (const record of candidates) {
+      await generateMinutesForSession(record.id);
+    }
   };
 
   const deleteSession = async (sessionId: string) => {
@@ -1167,6 +1438,8 @@ function App() {
       } else {
         setSelectedSessionId(null);
         setTimelineSegments([]);
+        setMinutesDraft("");
+        setActiveTranscriptView("realtime");
         setCurrentAudioUrl(null);
       }
     }
@@ -1268,10 +1541,7 @@ function App() {
     ["tiny"];
   const appReady = Boolean(draftSettings && meta);
   const hasActiveCapture = status !== "idle" && status !== "error";
-  const generatedLiveTitle =
-    currentSessionId !== null
-      ? `Live Record ${currentSessionId.slice(0, 6)}`
-      : "Live Record";
+  const generatedLiveTitle = formatSessionTitle(liveSessionStartedAt);
   const totalDuration = deferredSegments.at(-1)
     ? deferredSegments.at(-1)!.startedAt + deferredSegments.at(-1)!.duration
     : 0;
@@ -1308,9 +1578,21 @@ function App() {
   const visibleRecords = liveRecord ? [liveRecord, ...historyRecords] : historyRecords;
   const activeRecord = liveRecord ?? selectedHistoryRecord;
   const transcriptAvailable = timelineSegments.length > 0;
+  const minutesAvailable = minutesDraft.trim().length > 0;
+  const exportAvailable = transcriptAvailable || minutesAvailable;
   const showAudioPlayer = Boolean(currentAudioUrl && status === "idle");
+  const canGenerateSelectedMinutes = Boolean(
+    selectedSessionId && currentAudioUrl && status === "idle",
+  );
+  const selectedMinutesProcessing = Boolean(
+    selectedSessionId && minutesProcessingIds.includes(selectedSessionId),
+  );
   const canDeleteSelectedSession = Boolean(selectedSessionId && !hasActiveCapture);
   const activeTitle = activeRecord?.title ?? "Voice2Text Workspace";
+  const renderedMinutesHtml = renderMarkdown(minutesDraft);
+  const transcriptGridClass = showLlmRefined
+    ? TRANSCRIPT_GRID_CLASS
+    : "lg:grid lg:grid-cols-[88px_132px_minmax(0,1fr)] lg:gap-4";
   const inputGainDialAngle = gainDbToDialAngle(inputGainDb);
   const inputGainSweepDegrees =
     ((inputGainDb - INPUT_GAIN_MIN_DB) /
@@ -1335,6 +1617,15 @@ function App() {
       : sidebarContextRecord
         ? [sidebarContextRecord.id]
         : [];
+  const sidebarContextActionIds = sidebarContextDeleteIds;
+  const sidebarContextMinutesCount = sidebarContextActionIds.filter((sessionId) => {
+    const record = sidebarHistoryRecordMap.get(sessionId);
+    return (
+      record?.audioUrl &&
+      (record.minutesStatus ?? "idle") !== "complete" &&
+      !minutesProcessingIds.includes(sessionId)
+    );
+  }).length;
 
   const selectSidebarRecordRange = (targetId: string) => {
     const orderedIds = historyRecords.map((record) => record.id);
@@ -1438,6 +1729,87 @@ function App() {
     } else if (event.key === "End") {
       event.preventDefault();
       setInputGainDb(INPUT_GAIN_MAX_DB);
+    }
+  };
+
+  const updateSidebarWidthFromPointer = (clientX: number) => {
+    const panel = recordsPanelRef.current;
+    if (!panel) {
+      return;
+    }
+
+    const panelLeft = panel.getBoundingClientRect().left;
+    setSidebarWidth(
+      clampNumber(clientX - panelLeft, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH),
+    );
+  };
+
+  const handleSidebarResizePointerDown = (
+    event: ReactPointerEvent<HTMLDivElement>,
+  ) => {
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    updateSidebarWidthFromPointer(event.clientX);
+  };
+
+  const handleSidebarResizePointerMove = (
+    event: ReactPointerEvent<HTMLDivElement>,
+  ) => {
+    if (!event.currentTarget.hasPointerCapture(event.pointerId)) {
+      return;
+    }
+    updateSidebarWidthFromPointer(event.clientX);
+  };
+
+  const handleSidebarResizePointerUp = (
+    event: ReactPointerEvent<HTMLDivElement>,
+  ) => {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+
+  const updateMinutesSplitFromPointer = (clientX: number) => {
+    const split = minutesSplitRef.current;
+    if (!split) {
+      return;
+    }
+
+    const rect = split.getBoundingClientRect();
+    const maxEditorWidth = Math.max(
+      MINUTES_PANE_MIN_WIDTH,
+      rect.width - MINUTES_PANE_MIN_WIDTH,
+    );
+    const editorWidth = clampNumber(
+      clientX - rect.left,
+      MINUTES_PANE_MIN_WIDTH,
+      maxEditorWidth,
+    );
+    setMinutesEditorPercent((editorWidth / rect.width) * 100);
+  };
+
+  const handleMinutesResizePointerDown = (
+    event: ReactPointerEvent<HTMLDivElement>,
+  ) => {
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    updateMinutesSplitFromPointer(event.clientX);
+  };
+
+  const handleMinutesResizePointerMove = (
+    event: ReactPointerEvent<HTMLDivElement>,
+  ) => {
+    if (!event.currentTarget.hasPointerCapture(event.pointerId)) {
+      return;
+    }
+    updateMinutesSplitFromPointer(event.clientX);
+  };
+
+  const handleMinutesResizePointerUp = (
+    event: ReactPointerEvent<HTMLDivElement>,
+  ) => {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
     }
   };
 
@@ -1598,7 +1970,9 @@ function App() {
       </AnimatePresence>
 
       <aside
-        className={`fixed inset-y-0 left-0 z-40 flex w-[min(88vw,20rem)] flex-col border-r border-slate-200 bg-[#f8f9fb] transition-transform duration-300 md:static md:z-auto md:w-80 md:translate-x-0 ${
+        ref={recordsPanelRef}
+        style={{ width: sidebarWidth }}
+        className={`fixed inset-y-0 left-0 z-40 flex max-w-[88vw] flex-col border-r border-slate-200 bg-[#f8f9fb] transition-transform duration-300 md:static md:z-auto md:max-w-none md:translate-x-0 ${
           recordsOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >
@@ -1796,6 +2170,20 @@ function App() {
         </div>
       </aside>
 
+      <div
+        role="separator"
+        aria-label="Resize records panel"
+        aria-orientation="vertical"
+        tabIndex={-1}
+        onPointerDown={handleSidebarResizePointerDown}
+        onPointerMove={handleSidebarResizePointerMove}
+        onPointerUp={handleSidebarResizePointerUp}
+        onPointerCancel={handleSidebarResizePointerUp}
+        className="group hidden w-2 shrink-0 touch-none cursor-col-resize items-stretch justify-center bg-white md:flex"
+      >
+        <div className="h-full w-px bg-slate-200 transition-colors group-hover:bg-[#007aff] group-active:bg-[#007aff]" />
+      </div>
+
       <section className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <header className="flex h-16 flex-shrink-0 items-center justify-between border-b border-slate-200 bg-white/90 px-4 backdrop-blur-sm sm:px-6 lg:px-8">
           <div className="flex min-w-0 flex-1 items-center gap-3">
@@ -1877,10 +2265,38 @@ function App() {
           </div>
 
           <div className="flex items-center gap-2">
+            {selectedSessionId ? (
+              <div className="inline-flex rounded-xl border border-slate-200 bg-white p-1">
+                <button
+                  type="button"
+                  onClick={() => setActiveTranscriptView("realtime")}
+                  className={`inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-sm font-semibold transition-colors ${
+                    activeTranscriptView === "realtime"
+                      ? "bg-[#007aff] text-white"
+                      : "text-[#007aff] hover:bg-[#007aff]/10"
+                  }`}
+                >
+                  <AlignLeft className="size-3.5" />
+                  リアルタイム
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTranscriptView("minutes")}
+                  className={`inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-sm font-semibold transition-colors ${
+                    activeTranscriptView === "minutes"
+                      ? "bg-[#007aff] text-white"
+                      : "text-[#007aff] hover:bg-[#007aff]/10"
+                  }`}
+                >
+                  <FileText className="size-3.5" />
+                  ミニッツ
+                </button>
+              </div>
+            ) : null}
             <button
               type="button"
               onClick={() => void copyTranscript()}
-              disabled={!transcriptAvailable}
+              disabled={!exportAvailable}
               className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-500 transition-colors hover:border-slate-300 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
               aria-label="Copy transcript"
             >
@@ -1889,7 +2305,7 @@ function App() {
             <button
               type="button"
               onClick={() => void downloadTranscript()}
-              disabled={!transcriptAvailable}
+              disabled={!exportAvailable}
               className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-500 transition-colors hover:border-slate-300 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
               aria-label="Download transcript"
             >
@@ -1898,7 +2314,7 @@ function App() {
             <button
               type="button"
               onClick={() => void shareTranscript()}
-              disabled={!transcriptAvailable}
+              disabled={!exportAvailable}
               className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-500 transition-colors hover:border-slate-300 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
               aria-label="Share transcript"
             >
@@ -1932,14 +2348,98 @@ function App() {
           ref={transcriptScrollRef}
           className="app-scrollbar flex-1 overflow-y-auto px-4 py-6 sm:px-6 lg:px-8"
         >
+          {activeTranscriptView === "minutes" ? (
+            <div
+              ref={minutesSplitRef}
+              className="mx-auto flex w-full max-w-[1380px] flex-col overflow-hidden pb-10 lg:min-h-[calc(100vh-12rem)] lg:flex-row"
+            >
+              <section
+                className="flex min-h-[26rem] min-w-0 flex-col bg-white lg:min-h-0"
+                style={{ flexBasis: `${minutesEditorPercent}%` }}
+              >
+                <div className="flex items-center justify-between border-b border-slate-100 px-4 py-2">
+                  <div className="flex items-center gap-2 text-xs font-semibold text-slate-500">
+                    <FileText className="size-4" />
+                    Markdown Editor
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void copyTranscript()}
+                    disabled={!minutesDraft.trim()}
+                    className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-semibold text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+                    Copy All
+                  </button>
+                </div>
+                <textarea
+                  value={minutesDraft}
+                  onChange={(event) => onMinutesEdit(event.target.value)}
+                  className="app-scrollbar min-h-[26rem] flex-1 resize-none bg-white p-4 font-mono text-sm leading-7 text-slate-700 outline-none lg:min-h-0"
+                  placeholder="一括文字起こし整形を実行すると、Markdown形式のミニッツがここに表示されます。"
+                  spellCheck={false}
+                />
+              </section>
+              <div
+                role="separator"
+                aria-label="Resize Markdown and preview panes"
+                aria-orientation="vertical"
+                tabIndex={-1}
+                onPointerDown={handleMinutesResizePointerDown}
+                onPointerMove={handleMinutesResizePointerMove}
+                onPointerUp={handleMinutesResizePointerUp}
+                onPointerCancel={handleMinutesResizePointerUp}
+                className="group hidden w-3 shrink-0 touch-none cursor-col-resize items-stretch justify-center bg-white lg:flex"
+              >
+                <div className="h-full w-px bg-slate-200 transition-colors group-hover:bg-[#007aff] group-active:bg-[#007aff]" />
+              </div>
+              <section
+                className="flex min-h-[26rem] min-w-0 flex-col border-t border-slate-200 bg-white lg:min-h-0 lg:border-t-0"
+                style={{ flexBasis: `${100 - minutesEditorPercent}%` }}
+              >
+                <div className="flex items-center gap-2 border-b border-slate-100 px-4 py-2 text-xs font-semibold text-slate-500">
+                  <AlignLeft className="size-4" />
+                  Preview
+                </div>
+                <div
+                  className="markdown-preview flex-1 overflow-y-auto p-6 text-sm leading-7 text-slate-700"
+                  dangerouslySetInnerHTML={{ __html: renderedMinutesHtml }}
+                />
+              </section>
+            </div>
+          ) : (
           <div className="mx-auto w-full max-w-[1380px] pb-10">
             <div
-              className={`hidden border-b border-slate-200 pb-3 text-[10px] font-bold uppercase tracking-[0.24em] text-slate-400 ${TRANSCRIPT_GRID_CLASS}`}
+              className={`hidden border-b border-slate-200 pb-3 text-[10px] font-bold uppercase tracking-[0.24em] text-slate-400 ${transcriptGridClass}`}
             >
               <div>Speaker</div>
               <div>Time</div>
-              <div>Transcript Text</div>
-              <div>LLM Refined</div>
+              <div className="flex items-center gap-2">
+                <span>Transcript Text</span>
+                {!showLlmRefined ? (
+                  <button
+                    type="button"
+                    onClick={() => setShowLlmRefined(true)}
+                    className="rounded-full border border-[#007aff] px-2 py-0.5 text-[10px] font-bold text-[#007aff]"
+                    aria-label="Show LLM Refined column"
+                  >
+                    LLM
+                  </button>
+                ) : null}
+              </div>
+              {showLlmRefined ? (
+                <div className="flex items-center gap-2">
+                  <span>LLM Refined</span>
+                  <button
+                    type="button"
+                    onClick={() => setShowLlmRefined((current) => !current)}
+                    className="relative h-4 w-7 rounded-full bg-[#007aff]"
+                    aria-label="Hide LLM Refined column"
+                  >
+                    <span className="absolute right-0.5 top-0.5 h-3 w-3 rounded-full bg-white" />
+                  </button>
+                </div>
+              ) : null}
             </div>
 
             <div>
@@ -1970,7 +2470,7 @@ function App() {
                       animate={{ opacity: 1, y: 0 }}
                       exit={{ opacity: 0, y: -8 }}
                       transition={{ duration: 0.18, ease: "easeOut" }}
-                      className={`border-b border-slate-100 py-1.5 ${TRANSCRIPT_GRID_CLASS}`}
+                      className={`border-b border-slate-100 py-1.5 ${transcriptGridClass}`}
                     >
                       <div className="flex items-center justify-between gap-2 lg:block">
                         <div className="flex items-center gap-1">
@@ -2033,43 +2533,49 @@ function App() {
                         />
                       </div>
 
-                      <div className="mt-2 min-w-0 rounded-lg bg-slate-50 px-3 py-2 lg:mt-0">
-                        {segment.llmStatus === "pending" ? (
-                          <p className="text-[11px] font-semibold text-slate-400">
-                            Refining with {segment.llmModel ?? "Gemma"}
-                          </p>
-                        ) : segment.llmStatus === "error" ? (
-                          <p
-                            className="text-[11px] font-semibold text-rose-500"
-                            title={segment.llmError ?? undefined}
-                          >
-                            LLM refinement failed
-                          </p>
-                        ) : segment.llmText ? (
-                          <>
+                      {showLlmRefined ? (
+                        <div className="mt-2 min-w-0 rounded-lg bg-slate-50 px-3 py-2 lg:mt-0">
+                          {segment.llmStatus === "pending" ? (
+                            <p className="text-[11px] font-semibold text-slate-400">
+                              Refining with {segment.llmModel ?? "Gemma"}
+                            </p>
+                          ) : segment.llmStatus === "error" ? (
                             <p
-                              className="whitespace-pre-wrap text-slate-900"
-                              style={{
-                                fontSize: "11px",
-                                fontWeight: 600,
-                                lineHeight: "16px",
-                              }}
+                              className="text-[11px] font-semibold text-rose-500"
+                              title={segment.llmError ?? undefined}
                             >
-                              {segment.llmText}
+                              LLM refinement failed
                             </p>
-                            <p className="mt-1 app-mono text-[10px] font-semibold text-slate-400">
-                              {segment.llmModel}
-                              {segment.llmLatencyMs
-                                ? ` / ${segment.llmLatencyMs} ms`
-                                : ""}
+                          ) : segment.llmText ? (
+                            <>
+                              <p
+                                className="whitespace-pre-wrap text-slate-900"
+                                style={{
+                                  fontSize: "11px",
+                                  fontWeight: 600,
+                                  lineHeight: "16px",
+                                }}
+                              >
+                                {segment.llmText}
+                              </p>
+                              <p className="mt-1 app-mono text-[10px] font-semibold text-slate-400">
+                                {segment.llmModel}
+                                {segment.llmLatencyMs
+                                  ? ` / ${segment.llmLatencyMs} ms`
+                                  : ""}
+                              </p>
+                            </>
+                          ) : segment.llmStatus === "complete" ? (
+                            <p className="text-[11px] font-semibold text-slate-300">
+                              Included in block above
                             </p>
-                          </>
-                        ) : (
-                          <p className="text-[11px] font-semibold text-slate-300">
-                            Not refined
-                          </p>
-                        )}
-                      </div>
+                          ) : (
+                            <p className="text-[11px] font-semibold text-slate-300">
+                              Not refined
+                            </p>
+                          )}
+                        </div>
+                      ) : null}
                     </motion.article>
                   ))
                 )}
@@ -2077,6 +2583,7 @@ function App() {
               {hasActiveCapture ? <div aria-hidden className="h-[24vh]" /> : null}
             </div>
           </div>
+          )}
         </div>
 
         <footer className="border-t border-slate-200 bg-white px-4 py-4 shadow-[0_-4px_20px_rgba(15,23,42,0.03)] sm:px-6 lg:px-8">
@@ -2171,6 +2678,24 @@ function App() {
                 </Button>
               ) : null}
             </div>
+
+            {canGenerateSelectedMinutes ? (
+              <button
+                type="button"
+                onClick={() =>
+                  selectedSessionId && void generateMinutesForSession(selectedSessionId)
+                }
+                disabled={selectedMinutesProcessing}
+                className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-[#007aff] bg-white px-4 text-sm font-semibold text-[#007aff] transition-colors hover:bg-[#007aff]/10 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {selectedMinutesProcessing ? (
+                  <LoaderCircle className="size-4 animate-spin" />
+                ) : (
+                  <FileText className="size-4" />
+                )}
+                文字起こし整形
+              </button>
+            ) : null}
 
             <div className="ml-auto flex items-center">
               <span className="app-mono text-2xl font-medium tabular-nums text-slate-900">
@@ -2483,7 +3008,7 @@ function App() {
                         </div>
 
                         <div className="space-y-2">
-                          <label className="field-label">Context After</label>
+                          <label className="field-label">Block Lines After</label>
                           <input
                             type="number"
                             min={0}
@@ -2913,6 +3438,22 @@ function App() {
             >
               <X className="size-4" />
               Clear Selection
+            </button>
+          ) : null}
+          {sidebarContextRecord.audioUrl ? (
+            <button
+              type="button"
+              onClick={() => {
+                void generateMinutesForSessions(sidebarContextActionIds);
+                setSidebarContextMenu(null);
+              }}
+              disabled={sidebarContextMinutesCount === 0}
+              className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-slate-600 transition-colors hover:bg-slate-50 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <FileText className="size-4" />
+              {sidebarContextMinutesCount > 1
+                ? `文字起こし整形 (${sidebarContextMinutesCount})`
+                : "文字起こし整形"}
             </button>
           ) : null}
           {sidebarContextRecord.audioUrl ? (

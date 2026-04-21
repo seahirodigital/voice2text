@@ -53,6 +53,9 @@ function Resolve-OllamaExe {
 
 if (Test-OllamaApi) {
   Write-Host "[Voice2Text] Ollama is already running at $ollamaBaseUrl."
+  Get-Process -Name "ollama" -ErrorAction SilentlyContinue | ForEach-Object {
+    try { $_.PriorityClass = "BelowNormal" } catch {}
+  }
   exit 0
 }
 
@@ -73,6 +76,10 @@ $process = Start-Process `
   -RedirectStandardOutput $stdoutLog `
   -RedirectStandardError $stderrLog `
   -PassThru
+
+try {
+  $process.PriorityClass = "BelowNormal"
+} catch {}
 
 $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
 while ((Get-Date) -lt $deadline) {

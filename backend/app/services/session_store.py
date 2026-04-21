@@ -120,6 +120,45 @@ class SessionStore:
             }
         )
 
+    def update_minutes(
+        self,
+        session_id: str,
+        *,
+        minutes_markdown: str,
+        minutes_segments: list[TranscriptSegment] | None = None,
+        minutes_model: str | None = None,
+        minutes_error: str | None = None,
+    ) -> SessionDetail | None:
+        detail = self.get_session(session_id)
+        if detail is None:
+            return None
+
+        now = utc_now_iso()
+        detail.minutes_markdown = minutes_markdown
+        if minutes_segments is not None:
+            detail.minutes_segments = minutes_segments
+            detail.segments = minutes_segments
+            detail.line_count = len(minutes_segments)
+            if minutes_segments:
+                last_segment = minutes_segments[-1]
+                detail.duration_seconds = round(
+                    last_segment.started_at + last_segment.duration,
+                    3,
+                )
+        detail.minutes_status = "error" if minutes_error else "complete"
+        detail.minutes_updated_at = now
+        detail.minutes_model = minutes_model
+        detail.minutes_error = minutes_error
+        detail.updated_at = now
+
+        summary = self.save_session(detail)
+        return SessionDetail.model_validate(
+            {
+                **detail.model_dump(by_alias=True),
+                **summary.model_dump(by_alias=True),
+            }
+        )
+
     def delete_session(self, session_id: str) -> bool:
         detail = self.get_session(session_id)
         if detail is None:

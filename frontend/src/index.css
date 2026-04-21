@@ -102,3 +102,48 @@ select {
 .app-scrollbar::-webkit-scrollbar-thumb:hover {
   background: rgba(100, 116, 139, 0.6);
 }
+
+.markdown-preview h1 {
+  margin: 0 0 1rem;
+  border-bottom: 2px solid rgb(226 232 240);
+  padding-bottom: 0.55rem;
+  color: rgb(15 23 42);
+  font-size: 1.35rem;
+  font-weight: 800;
+}
+
+.markdown-preview h2 {
+  margin: 1.3rem 0 0.6rem;
+  color: rgb(15 23 42);
+  font-size: 1.15rem;
+  font-weight: 750;
+}
+
+.markdown-preview h3 {
+  margin: 1rem 0 0.45rem;
+  color: rgb(51 65 85);
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.markdown-preview p {
+  margin: 0.55rem 0;
+}
+
+.markdown-preview ul {
+  margin: 0.65rem 0;
+  padding-left: 1.2rem;
+}
+
+.markdown-preview li {
+  margin: 0.35rem 0;
+}
+
+.markdown-preview blockquote {
+  margin: 0.75rem 0;
+  border-left: 4px solid rgb(59 130 246);
+  border-radius: 0 0.5rem 0.5rem 0;
+  background: rgb(239 246 255);
+  padding: 0.75rem 1rem;
+  color: rgb(30 64 175);
+}

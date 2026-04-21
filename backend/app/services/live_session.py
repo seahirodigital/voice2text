@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from difflib import SequenceMatcher
 from pathlib import Path
 from uuid import uuid4
 
@@ -73,6 +75,7 @@ def _resolve_model(
 @dataclass(slots=True)
 class SessionContext:
     session_id: str
+    title: str
     language: str
     model_preset: str
     browser_sample_rate: int
@@ -148,14 +151,17 @@ class LiveTranscriptionSession:
         if self.enable_word_timestamps:
             options["word_timestamps"] = "true"
 
+        started_at = utc_now_iso()
+        title = _format_session_title(started_at)
         self.context = SessionContext(
             session_id=f"session-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:8]}",
+            title=title,
             language=payload.language,
             model_preset=resolved_preset,
             browser_sample_rate=payload.browser_sample_rate,
             channels=payload.channels,
             device_label=payload.device_label,
-            started_at=utc_now_iso(),
+            started_at=started_at,
         )
         self.labeler = SpeakerLabeler(payload.max_speakers)
         self.raw_audio = bytearray()
@@ -183,6 +189,8 @@ class LiveTranscriptionSession:
             "type": "started",
             "payload": {
                 "sessionId": self.context.session_id,
+                "title": self.context.title,
+                "createdAt": self.context.started_at,
                 "language": self.context.language,
                 "modelPreset": self.context.model_preset,
                 "deviceLabel": self.context.device_label,
@@ -211,7 +219,9 @@ class LiveTranscriptionSession:
         )
         if settings.enabled:
             for line_id, segment in list(self.segments.items()):
-                if segment.text.strip():
+                if segment.text.strip() and (
+                    not settings.complete_only or segment.is_complete
+                ):
                     self._schedule_llm_refinement(line_id)
 
     def ingest_audio(self, frame_bytes: bytes) -> None:
@@ -256,6 +266,13 @@ class LiveTranscriptionSession:
             llmLatencyMs=existing_segment.llm_latency_ms if existing_segment else None,
             llmUpdatedAt=existing_segment.llm_updated_at if existing_segment else None,
             llmError=existing_segment.llm_error if existing_segment else None,
+            llmBlockId=existing_segment.llm_block_id if existing_segment else None,
+            llmBlockStartLineId=(
+                existing_segment.llm_block_start_line_id if existing_segment else None
+            ),
+            llmBlockEndLineId=(
+                existing_segment.llm_block_end_line_id if existing_segment else None
+            ),
         )
         self.segments[line.line_id] = segment
         self._put_nowait(
@@ -264,7 +281,8 @@ class LiveTranscriptionSession:
                 "payload": segment.model_dump(by_alias=True),
             }
         )
-        self._schedule_llm_refinement(line.line_id)
+        if event_type == "line_completed" or not self.llm_settings.complete_only:
+            self._schedule_llm_refinement(line.line_id)
 
     def publish_error(self, message: str) -> None:
         self._put_nowait({"type": "error", "payload": {"message": message}})
@@ -288,7 +306,7 @@ class LiveTranscriptionSession:
                 3,
             )
 
-        derived_title = _format_session_title(self.context.started_at)
+        derived_title = self.context.title
         audio_url = self.store.save_recording(
             self.context.session_id,
             bytes(self.raw_audio),
@@ -322,6 +340,12 @@ class LiveTranscriptionSession:
         self._cancel_llm_tasks()
         return payload
 
+    async def finalize_after_refinement(self) -> dict | None:
+        if not self.active or self.context is None:
+            return None
+        await self._drain_llm_for_finalize()
+        return self.finalize()
+
     def shutdown(self) -> None:
         if not self.active:
             return
@@ -353,6 +377,18 @@ class LiveTranscriptionSession:
         ):
             return
 
+        pending_covering_line = next(
+            (
+                pending_line_id
+                for pending_line_id in self.llm_pending_line_ids
+                if pending_line_id <= line_id
+                and line_id <= pending_line_id + settings.context_after_lines
+            ),
+            None,
+        )
+        if pending_covering_line is not None and pending_covering_line != line_id:
+            return
+
         revision = self.llm_revisions.get(line_id, 0) + 1
         self.llm_revisions[line_id] = revision
         self.llm_pending_line_ids.add(line_id)
@@ -379,6 +415,44 @@ class LiveTranscriptionSession:
     def _wake_llm_worker(self) -> None:
         self.loop.call_soon_threadsafe(self.llm_wake_event.set)
 
+    async def _drain_llm_for_finalize(self) -> None:
+        settings = self.llm_settings.model_copy(deep=True)
+        if not settings.enabled or settings.provider != "ollama":
+            return
+
+        future = self.llm_worker_future
+        if future is not None and not future.done():
+            future.cancel()
+        self.llm_worker_future = None
+
+        now = time.monotonic()
+        for line_id, segment in sorted(self.segments.items()):
+            if not segment.text.strip():
+                continue
+            if (
+                line_id not in self.llm_pending_line_ids
+                and segment.llm_status == "complete"
+                and segment.llm_text is not None
+            ):
+                continue
+            self.llm_revisions[line_id] = self.llm_revisions.get(line_id, 0) + 1
+            self.llm_pending_line_ids.add(line_id)
+            self.llm_requested_at[line_id] = now
+            segment.llm_status = "pending"
+            segment.llm_model = settings.model
+            segment.llm_updated_at = utc_now_iso()
+            segment.llm_error = None
+            self._publish_llm_segment("llm_refinement_started", segment)
+
+        while self.active and self.llm_pending_line_ids:
+            block_start_line_id = min(self.llm_pending_line_ids)
+            revision = self.llm_revisions.get(block_start_line_id, 0)
+            await self._refine_block(
+                block_start_line_id,
+                revision,
+                settings,
+            )
+
     async def _llm_worker_loop(self) -> None:
         try:
             while self.active:
@@ -387,8 +461,8 @@ class LiveTranscriptionSession:
                     return
 
                 self.llm_wake_event.clear()
-                line_id, wait_seconds = self._next_llm_work(settings)
-                if line_id is None:
+                block_start_line_id, wait_seconds = self._next_llm_work(settings)
+                if block_start_line_id is None:
                     if wait_seconds is None:
                         await self.llm_wake_event.wait()
                     else:
@@ -401,10 +475,9 @@ class LiveTranscriptionSession:
                             pass
                     continue
 
-                revision = self.llm_revisions.get(line_id, 0)
-                self.llm_pending_line_ids.discard(line_id)
-                await self._refine_line(
-                    line_id,
+                revision = self.llm_revisions.get(block_start_line_id, 0)
+                await self._refine_block(
+                    block_start_line_id,
                     revision,
                     settings,
                 )
@@ -457,51 +530,78 @@ class LiveTranscriptionSession:
         )
         return available_after_lines >= required_after_lines
 
-    async def _refine_line(
+    async def _refine_block(
         self,
-        line_id: int,
+        block_start_line_id: int,
         revision: int,
         settings: LlmSettings,
     ) -> None:
         try:
-            if not self.active or self.llm_revisions.get(line_id) != revision:
+            if (
+                not self.active
+                or self.llm_revisions.get(block_start_line_id) != revision
+            ):
+                return
+
+            target_segments = self._target_block_segments(block_start_line_id, settings)
+            if not target_segments:
+                self.llm_pending_line_ids.discard(block_start_line_id)
                 return
 
             context = self._build_refinement_context(
-                line_id,
+                block_start_line_id,
                 settings.context_before_lines,
                 settings.context_after_lines,
             )
             result = await OllamaClient(settings).refine(context)
 
-            if not self.active or self.llm_revisions.get(line_id) != revision:
+            if (
+                not self.active
+                or self.llm_revisions.get(block_start_line_id) != revision
+            ):
                 return
 
-            segment = self.segments.get(line_id)
-            if segment is None:
+            anchor_segment = self.segments.get(block_start_line_id)
+            if anchor_segment is None:
                 return
 
-            segment.llm_text = result.text
-            segment.llm_status = "complete"
-            segment.llm_model = settings.model
-            segment.llm_latency_ms = result.latency_ms
-            segment.llm_updated_at = utc_now_iso()
-            segment.llm_error = None
-            self.llm_requested_at.pop(line_id, None)
-            self._publish_llm_segment("llm_refinement_updated", segment)
+            covered_line_ids = {segment.line_id for segment in target_segments}
+            block_end_line_id = max(covered_line_ids)
+            block_id = f"llm-block-{block_start_line_id}-{block_end_line_id}"
+            previous_texts = self._previous_refined_texts(block_start_line_id)
+            refined_text = self._dedupe_refined_text(result.text, previous_texts)
+            self.llm_pending_line_ids.difference_update(covered_line_ids)
+            for segment in target_segments:
+                segment.llm_status = "complete"
+                segment.llm_model = settings.model
+                segment.llm_latency_ms = result.latency_ms
+                segment.llm_updated_at = utc_now_iso()
+                segment.llm_error = None
+                segment.llm_block_id = block_id
+                segment.llm_block_start_line_id = block_start_line_id
+                segment.llm_block_end_line_id = block_end_line_id
+                segment.llm_text = (
+                    refined_text if segment.line_id == block_start_line_id else ""
+                )
+                self.llm_requested_at.pop(segment.line_id, None)
+                self._publish_llm_segment("llm_refinement_updated", segment)
         except asyncio.CancelledError:
             return
         except Exception as exc:
-            if not self.active or self.llm_revisions.get(line_id) != revision:
+            if (
+                not self.active
+                or self.llm_revisions.get(block_start_line_id) != revision
+            ):
                 return
-            segment = self.segments.get(line_id)
+            segment = self.segments.get(block_start_line_id)
             if segment is None:
                 return
             segment.llm_status = "error"
             segment.llm_model = settings.model
             segment.llm_updated_at = utc_now_iso()
             segment.llm_error = str(exc)
-            self.llm_requested_at.pop(line_id, None)
+            self.llm_pending_line_ids.discard(block_start_line_id)
+            self.llm_requested_at.pop(block_start_line_id, None)
             self._publish_llm_segment("llm_refinement_error", segment)
 
     def _ordered_segments(self) -> list[TranscriptSegment]:
@@ -525,36 +625,123 @@ class LiveTranscriptionSession:
 
     def _build_refinement_context(
         self,
-        line_id: int,
+        block_start_line_id: int,
         context_before_lines: int,
         context_after_lines: int,
     ) -> str:
         ordered_segments = self._ordered_segments()
-        current_index = self._segment_index(ordered_segments, line_id)
+        current_index = self._segment_index(ordered_segments, block_start_line_id)
         if current_index is None:
-            return "Refine only the CURRENT line.\nCURRENT: "
+            return "Refine only TARGET lines.\nTARGET: "
 
-        start_index = max(0, current_index - context_before_lines)
         end_index = min(len(ordered_segments), current_index + context_after_lines + 1)
-        context_segments = ordered_segments[start_index:end_index]
+        target_segments = ordered_segments[current_index:end_index]
+        target_line_ids = {
+            segment.line_id
+            for segment in target_segments
+            if segment.text.strip()
+        }
         lines = []
-        for segment in context_segments:
-            if segment.line_id == line_id:
-                marker = "CURRENT"
-            elif segment.line_id < line_id:
-                marker = "PREVIOUS"
-            else:
-                marker = "NEXT"
+        previous_texts = self._previous_refined_texts(
+            block_start_line_id,
+            limit=context_before_lines,
+        )
+        for index, text in enumerate(previous_texts, start=1):
+            lines.append(f"PREVIOUS_REFINED {index}: {text}")
+        for segment in target_segments:
+            if segment.line_id not in target_line_ids:
+                continue
             status = "complete" if segment.is_complete else "draft"
             lines.append(
-                f"{marker} line={segment.line_id} status={status} "
+                f"TARGET line={segment.line_id} status={status} "
                 f"speaker={segment.speaker_label}: {segment.text}"
             )
         return (
-            "Refine only the CURRENT line. Use PREVIOUS and NEXT lines only as "
-            "context. Return exactly one refined line.\n"
+            "Refine all TARGET lines into one coherent Japanese paragraph. "
+            "Use PREVIOUS_REFINED only as context. Do not repeat it. "
+            "Return exactly one paragraph containing only new TARGET content.\n"
             + "\n".join(lines)
         )
+
+    def _previous_refined_texts(
+        self,
+        block_start_line_id: int,
+        limit: int | None = None,
+    ) -> list[str]:
+        seen_block_ids: set[str] = set()
+        texts: list[str] = []
+        for segment in reversed(self._ordered_segments()):
+            if segment.line_id >= block_start_line_id:
+                continue
+            text = (segment.llm_text or "").strip()
+            if not text:
+                continue
+            block_id = segment.llm_block_id or f"line-{segment.line_id}"
+            if block_id in seen_block_ids:
+                continue
+            seen_block_ids.add(block_id)
+            texts.append(text)
+            if limit is not None and len(texts) >= limit:
+                break
+        return list(reversed(texts))
+
+    @staticmethod
+    def _normalize_for_similarity(text: str) -> str:
+        return re.sub(r"\s+", "", text).strip().lower()
+
+    @classmethod
+    def _too_similar(cls, left: str, right: str) -> bool:
+        normalized_left = cls._normalize_for_similarity(left)
+        normalized_right = cls._normalize_for_similarity(right)
+        if not normalized_left or not normalized_right:
+            return False
+        if normalized_left in normalized_right or normalized_right in normalized_left:
+            return True
+        return SequenceMatcher(None, normalized_left, normalized_right).ratio() >= 0.9
+
+    @classmethod
+    def _dedupe_refined_text(cls, text: str, previous_texts: list[str]) -> str:
+        candidate = text.strip()
+        if not candidate:
+            return candidate
+        previous_sentences = [
+            sentence
+            for previous in previous_texts
+            for sentence in re.split(r"(?<=[。！？!?])\s*|\n+", previous)
+            if sentence.strip()
+        ]
+        next_sentences = [
+            sentence.strip()
+            for sentence in re.split(r"(?<=[。！？!?])\s*|\n+", candidate)
+            if sentence.strip()
+        ]
+        filtered = [
+            sentence
+            for sentence in next_sentences
+            if not any(cls._too_similar(sentence, previous) for previous in previous_sentences)
+        ]
+        if not filtered:
+            return candidate
+        return "".join(filtered)
+
+    def _target_block_segments(
+        self,
+        block_start_line_id: int,
+        settings: LlmSettings,
+    ) -> list[TranscriptSegment]:
+        ordered_segments = self._ordered_segments()
+        current_index = self._segment_index(ordered_segments, block_start_line_id)
+        if current_index is None:
+            return []
+        end_index = min(
+            len(ordered_segments),
+            current_index + settings.context_after_lines + 1,
+        )
+        return [
+            segment
+            for segment in ordered_segments[current_index:end_index]
+            if segment.text.strip()
+        ]
 
     def _publish_llm_segment(self, event_type: str, segment: TranscriptSegment) -> None:
         self._put_nowait(

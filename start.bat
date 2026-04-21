@@ -2,6 +2,7 @@
 setlocal
 
 set "ROOT=%~dp0"
+set "ROOT_NO_SLASH=%ROOT:~0,-1%"
 set "BACKEND_VENV=%LOCALAPPDATA%\Voice2Text\backend-venv"
 set "FRONTEND_URL=http://127.0.0.1:5173"
 set "LOG_DIR=%LOCALAPPDATA%\Voice2Text\logs"
@@ -32,12 +33,12 @@ if errorlevel 1 (
 echo [Voice2Text] Starting backend and frontend...
 
 powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%LLM\scripts\disable-ollama-startup.ps1" >nul 2>nul
-powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%LLM\scripts\start-ollama.ps1" -RepoRoot "%ROOT%"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%LLM\scripts\start-ollama.ps1" -RepoRoot "%ROOT_NO_SLASH%"
 if errorlevel 1 (
   echo [Voice2Text] Ollama is not ready. Raw transcription can still run, but LLM refinement requires Ollama.
 )
 
-powershell -NoProfile -Command "$ErrorActionPreference='Stop'; Start-Process -WindowStyle Hidden -FilePath '%BACKEND_VENV%\Scripts\python.exe' -ArgumentList '-m','uvicorn','app.main:app','--host','127.0.0.1','--port','8000' -WorkingDirectory '%ROOT%backend' -RedirectStandardOutput '%BACKEND_LOG%' -RedirectStandardError '%BACKEND_ERR%' | Out-Null"
+powershell -NoProfile -Command "$ErrorActionPreference='Stop'; $process = Start-Process -PassThru -WindowStyle Hidden -FilePath '%BACKEND_VENV%\Scripts\python.exe' -ArgumentList '-m','uvicorn','app.main:app','--host','127.0.0.1','--port','8000' -WorkingDirectory '%ROOT%backend' -RedirectStandardOutput '%BACKEND_LOG%' -RedirectStandardError '%BACKEND_ERR%'; try { $process.PriorityClass = 'AboveNormal' } catch {}; $process | Out-Null"
 
 set "BACKEND_READY="
 for /L %%I in (1,1,40) do (

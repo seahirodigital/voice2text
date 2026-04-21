@@ -13,12 +13,14 @@ from app.config import resolve_paths
 from app.models.schemas import (
     AppSettings,
     LlmSettings,
+    MinutesUpdatePayload,
     SessionTitleUpdatePayload,
     StartSessionPayload,
     TranscriptUpdatePayload,
     WebSocketEnvelope,
 )
 from app.services.live_session import LiveTranscriptionSession
+from app.services.minutes_service import create_minutes_for_session
 from app.services.session_store import SessionStore
 from app.services.settings_service import SettingsService
 
@@ -138,6 +140,60 @@ async def update_session_title(session_id: str, payload: SessionTitleUpdatePaylo
     return detail
 
 
+@app.put("/api/sessions/{session_id}/minutes")
+async def update_session_minutes(session_id: str, payload: MinutesUpdatePayload):
+    store = get_store()
+    detail = store.update_minutes(
+        session_id,
+        minutes_markdown=payload.minutes_markdown,
+        minutes_segments=None,
+    )
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return detail
+
+
+@app.post("/api/sessions/{session_id}/minutes")
+async def create_session_minutes(session_id: str):
+    settings = settings_service.get_settings()
+    paths = resolve_paths(settings)
+    store = SessionStore(
+        sessions_root=Path(paths.sessions_root),
+        recordings_root=Path(paths.temp_recordings_root),
+    )
+    try:
+        markdown, segments, model = await create_minutes_for_session(
+            store=store,
+            models_root=Path(paths.models_root),
+            session_id=session_id,
+            language=settings.transcription.language,
+            model_preset=settings.transcription.model_preset,
+            llm_settings=settings.llm,
+        )
+        detail = store.update_minutes(
+            session_id,
+            minutes_markdown=markdown,
+            minutes_segments=segments,
+            minutes_model=model,
+        )
+        if detail is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return detail
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        detail = store.update_minutes(
+            session_id,
+            minutes_markdown="",
+            minutes_segments=None,
+            minutes_model=settings.llm.model,
+            minutes_error=str(exc),
+        )
+        if detail is None:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 @app.delete("/api/sessions/{session_id}")
 async def delete_session(session_id: str):
     store = get_store()
@@ -239,7 +295,7 @@ async def transcription_socket(websocket: WebSocket):
             elif envelope.type == "resume_session":
                 session.resume()
             elif envelope.type == "stop_session":
-                session.finalize()
+                await session.finalize_after_refinement()
             else:
                 await websocket.send_json(
                     {

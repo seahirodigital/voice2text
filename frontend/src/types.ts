@@ -84,6 +84,9 @@ export interface TranscriptSegment {
   llmLatencyMs?: number | null;
   llmUpdatedAt?: string | null;
   llmError?: string | null;
+  llmBlockId?: string | null;
+  llmBlockStartLineId?: number | null;
+  llmBlockEndLineId?: number | null;
 }
 
 export interface SessionSummary {
@@ -96,10 +99,16 @@ export interface SessionSummary {
   lineCount: number;
   title: string;
   audioUrl?: string | null;
+  minutesStatus?: "idle" | "processing" | "complete" | "error";
+  minutesUpdatedAt?: string | null;
+  minutesModel?: string | null;
+  minutesError?: string | null;
 }
 
 export interface SessionDetail extends SessionSummary {
   segments: TranscriptSegment[];
+  minutesMarkdown?: string | null;
+  minutesSegments?: TranscriptSegment[];
 }
 
 export interface MetaResponse {

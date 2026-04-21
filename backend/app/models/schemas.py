@@ -34,10 +34,10 @@ class LlmSettings(BaseModel):
     context_before_lines: int = Field(
         default=3, alias="contextBeforeLines", ge=0, le=20
     )
-    context_after_lines: int = Field(default=2, alias="contextAfterLines", ge=0, le=10)
-    debounce_ms: int = Field(default=1200, alias="debounceMs", ge=0, le=10000)
-    max_wait_ms: int = Field(default=3000, alias="maxWaitMs", ge=0, le=30000)
-    complete_only: bool = Field(default=False, alias="completeOnly")
+    context_after_lines: int = Field(default=3, alias="contextAfterLines", ge=0, le=10)
+    debounce_ms: int = Field(default=5000, alias="debounceMs", ge=0, le=10000)
+    max_wait_ms: int = Field(default=5000, alias="maxWaitMs", ge=0, le=30000)
+    complete_only: bool = Field(default=True, alias="completeOnly")
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -115,6 +115,11 @@ class TranscriptSegment(BaseModel):
     llm_latency_ms: int | None = Field(default=None, alias="llmLatencyMs")
     llm_updated_at: str | None = Field(default=None, alias="llmUpdatedAt")
     llm_error: str | None = Field(default=None, alias="llmError")
+    llm_block_id: str | None = Field(default=None, alias="llmBlockId")
+    llm_block_start_line_id: int | None = Field(
+        default=None, alias="llmBlockStartLineId"
+    )
+    llm_block_end_line_id: int | None = Field(default=None, alias="llmBlockEndLineId")
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -130,17 +135,33 @@ class SessionSummary(BaseModel):
     title: str
     title_locked: bool = Field(default=False, alias="titleLocked")
     audio_url: str | None = Field(default=None, alias="audioUrl")
+    minutes_status: Literal["idle", "processing", "complete", "error"] = Field(
+        default="idle", alias="minutesStatus"
+    )
+    minutes_updated_at: str | None = Field(default=None, alias="minutesUpdatedAt")
+    minutes_model: str | None = Field(default=None, alias="minutesModel")
+    minutes_error: str | None = Field(default=None, alias="minutesError")
 
     model_config = ConfigDict(populate_by_name=True)
 
 
 class SessionDetail(SessionSummary):
     segments: list[TranscriptSegment]
+    minutes_markdown: str | None = Field(default=None, alias="minutesMarkdown")
+    minutes_segments: list[TranscriptSegment] = Field(
+        default_factory=list, alias="minutesSegments"
+    )
 
 
 class TranscriptUpdatePayload(BaseModel):
     segments: list[TranscriptSegment]
     title: str | None = Field(default=None, min_length=1, max_length=120)
+
+
+class MinutesUpdatePayload(BaseModel):
+    minutes_markdown: str = Field(default="", alias="minutesMarkdown")
+
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class SessionTitleUpdatePayload(BaseModel):
