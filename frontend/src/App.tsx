@@ -58,7 +58,8 @@ const INPUT_GAIN_STEP_DB = 1;
 const INPUT_GAIN_DIAL_START_DEG = -150;
 const INPUT_GAIN_DIAL_SWEEP_DEG = 270;
 const TRANSCRIPT_GRID_CLASS =
-  "lg:grid lg:grid-cols-[88px_132px_minmax(0,1fr)] lg:gap-4";
+  "lg:grid lg:grid-cols-[88px_132px_minmax(0,1fr)_minmax(0,1fr)] lg:gap-4";
+const LLM_MODEL_OPTIONS = ["gemma4:e2b", "gemma4:e4b"];
 
 const LANGUAGE_LABELS: Record<string, string> = {
   ja: "Japanese",
@@ -672,7 +673,10 @@ function App() {
       message.type === "line_started" ||
       message.type === "line_updated" ||
       message.type === "line_text_changed" ||
-      message.type === "line_completed"
+      message.type === "line_completed" ||
+      message.type === "llm_refinement_started" ||
+      message.type === "llm_refinement_updated" ||
+      message.type === "llm_refinement_error"
     ) {
       const incoming = (() => {
         const segment = message.payload as unknown as TranscriptSegment;
@@ -911,6 +915,7 @@ function App() {
               channels: 1,
               deviceLabel: selectedDevice?.label || "Default Microphone",
               maxSpeakers: draftSettings.transcription.maxSpeakers,
+              llm: draftSettings.llm,
             },
           }),
         );
@@ -1005,6 +1010,14 @@ function App() {
       setDraftSettings(response.settings);
       setUpdateIntervalDraft(String(response.settings.transcription.updateIntervalMs));
       setMeta(await apiFetch<MetaResponse>("/api/meta"));
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(
+          JSON.stringify({
+            type: "update_llm_settings",
+            payload: response.settings.llm,
+          }),
+        );
+      }
     } catch (saveError) {
       setError(
         saveError instanceof Error
@@ -1109,13 +1122,38 @@ function App() {
       return;
     }
 
-    await Promise.all(
-      uniqueIds.map((sessionId) =>
-        apiFetch<{ deleted: boolean }>(`/api/sessions/${sessionId}`, {
-          method: "DELETE",
-        }),
-      ),
+    const titles = uniqueIds.map(
+      (sessionId) =>
+        history.find((session) => session.id === sessionId)?.title ?? sessionId,
     );
+    const previewTitles = titles.slice(0, 6).map((title) => `- ${title}`);
+    if (titles.length > previewTitles.length) {
+      previewTitles.push(`- ...and ${titles.length - previewTitles.length} more`);
+    }
+    const confirmed = window.confirm(
+      uniqueIds.length === 1
+        ? `Delete "${titles[0]}"?`
+        : `Delete ${uniqueIds.length} selected records?\n\n${previewTitles.join("\n")}`,
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      for (const sessionId of uniqueIds) {
+        await apiFetch<{ deleted: boolean }>(`/api/sessions/${sessionId}`, {
+          method: "DELETE",
+        });
+      }
+    } catch (deleteError) {
+      setError(
+        deleteError instanceof Error
+          ? deleteError.message
+          : "Failed to delete the selected records.",
+      );
+      await refreshHistory();
+      return;
+    }
 
     setSidebarSelectedRecordIds((current) =>
       current.filter((sessionId) => !uniqueIds.includes(sessionId)),
@@ -1292,9 +1330,7 @@ function App() {
     ? sidebarSelectedRecordIdSet.has(sidebarContextRecord.id)
     : false;
   const sidebarContextDeleteIds =
-    sidebarContextRecord &&
-    sidebarContextRecordIsSelected &&
-    validSidebarSelectedRecordIds.length > 0
+    sidebarContextRecord && validSidebarSelectedRecordIds.length > 0
       ? validSidebarSelectedRecordIds
       : sidebarContextRecord
         ? [sidebarContextRecord.id]
@@ -1661,10 +1697,14 @@ function App() {
                         : ""
                   }`}
                   onContextMenu={(event) => {
-                    if (record.kind !== "history") {
+                    if (record.kind !== "history" || isDisabled) {
                       return;
                     }
                     event.preventDefault();
+                    if (!sidebarSelectedRecordIdSet.has(record.id)) {
+                      setSidebarSelectedRecordIds([record.id]);
+                      lastSidebarSelectedRecordIdRef.current = record.id;
+                    }
                     setSidebarContextMenu({
                       recordId: record.id,
                       x: event.clientX,
@@ -1899,6 +1939,7 @@ function App() {
               <div>Speaker</div>
               <div>Time</div>
               <div>Transcript Text</div>
+              <div>LLM Refined</div>
             </div>
 
             <div>
@@ -1990,6 +2031,44 @@ function App() {
                             lineHeight: "16px",
                           }}
                         />
+                      </div>
+
+                      <div className="mt-2 min-w-0 rounded-lg bg-slate-50 px-3 py-2 lg:mt-0">
+                        {segment.llmStatus === "pending" ? (
+                          <p className="text-[11px] font-semibold text-slate-400">
+                            Refining with {segment.llmModel ?? "Gemma"}
+                          </p>
+                        ) : segment.llmStatus === "error" ? (
+                          <p
+                            className="text-[11px] font-semibold text-rose-500"
+                            title={segment.llmError ?? undefined}
+                          >
+                            LLM refinement failed
+                          </p>
+                        ) : segment.llmText ? (
+                          <>
+                            <p
+                              className="whitespace-pre-wrap text-slate-900"
+                              style={{
+                                fontSize: "11px",
+                                fontWeight: 600,
+                                lineHeight: "16px",
+                              }}
+                            >
+                              {segment.llmText}
+                            </p>
+                            <p className="mt-1 app-mono text-[10px] font-semibold text-slate-400">
+                              {segment.llmModel}
+                              {segment.llmLatencyMs
+                                ? ` / ${segment.llmLatencyMs} ms`
+                                : ""}
+                            </p>
+                          </>
+                        ) : (
+                          <p className="text-[11px] font-semibold text-slate-300">
+                            Not refined
+                          </p>
+                        )}
                       </div>
                     </motion.article>
                   ))
@@ -2322,6 +2401,159 @@ function App() {
                     <section className="space-y-4">
                       <div>
                         <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-slate-400">
+                          Local LLM
+                        </p>
+                        <p className="mt-1 text-sm text-slate-500">
+                          Ollama refinement runs locally and appears beside the raw
+                          transcript.
+                        </p>
+                      </div>
+
+                      <label className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                        <div>
+                          <p className="text-sm font-medium text-slate-900">
+                            Enable refinement
+                          </p>
+                          <p className="mt-1 text-xs text-slate-500">
+                            Keep Moonshine text intact while writing the LLM result in a
+                            separate column.
+                          </p>
+                        </div>
+                        <input
+                          type="checkbox"
+                          checked={draftSettings.llm.enabled}
+                          onChange={(event) =>
+                            updateDraftSettings((current) => ({
+                              ...current,
+                              llm: {
+                                ...current.llm,
+                                enabled: event.target.checked,
+                              },
+                            }))
+                          }
+                          className="h-4 w-4 rounded border-slate-300 text-[#007aff] focus:ring-[#007aff]"
+                        />
+                      </label>
+
+                      <div className="grid gap-4 sm:grid-cols-2">
+                        <div className="space-y-2">
+                          <label className="field-label">Gemma Model</label>
+                          <select
+                            value={draftSettings.llm.model}
+                            onChange={(event) =>
+                              updateDraftSettings((current) => ({
+                                ...current,
+                                llm: {
+                                  ...current.llm,
+                                  model: event.target.value,
+                                },
+                              }))
+                            }
+                            className="field-input"
+                          >
+                            {LLM_MODEL_OPTIONS.map((model) => (
+                              <option key={model} value={model}>
+                                {model}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div className="space-y-2">
+                          <label className="field-label">Context Lines</label>
+                          <input
+                            type="number"
+                            min={1}
+                            max={20}
+                            value={draftSettings.llm.contextLines}
+                            onChange={(event) =>
+                              updateDraftSettings((current) => ({
+                                ...current,
+                                llm: {
+                                  ...current.llm,
+                                  contextLines: Math.min(
+                                    20,
+                                    Math.max(1, Number(event.target.value) || 1),
+                                  ),
+                                },
+                              }))
+                            }
+                            className="field-input"
+                          />
+                        </div>
+
+                        <div className="space-y-2">
+                          <label className="field-label">Debounce ms</label>
+                          <input
+                            type="number"
+                            min={0}
+                            max={10000}
+                            step={100}
+                            value={draftSettings.llm.debounceMs}
+                            onChange={(event) =>
+                              updateDraftSettings((current) => ({
+                                ...current,
+                                llm: {
+                                  ...current.llm,
+                                  debounceMs: Math.min(
+                                    10000,
+                                    Math.max(0, Number(event.target.value) || 0),
+                                  ),
+                                },
+                              }))
+                            }
+                            className="field-input"
+                          />
+                        </div>
+
+                        <div className="space-y-2">
+                          <label className="field-label">Ollama URL</label>
+                          <input
+                            type="text"
+                            value={draftSettings.llm.baseUrl}
+                            onChange={(event) =>
+                              updateDraftSettings((current) => ({
+                                ...current,
+                                llm: {
+                                  ...current.llm,
+                                  baseUrl: event.target.value,
+                                },
+                              }))
+                            }
+                            className="field-input"
+                          />
+                        </div>
+                      </div>
+
+                      <label className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                        <div>
+                          <p className="text-sm font-medium text-slate-900">
+                            Complete lines only
+                          </p>
+                          <p className="mt-1 text-xs text-slate-500">
+                            Wait until Moonshine marks a line complete before refinement.
+                          </p>
+                        </div>
+                        <input
+                          type="checkbox"
+                          checked={draftSettings.llm.completeOnly}
+                          onChange={(event) =>
+                            updateDraftSettings((current) => ({
+                              ...current,
+                              llm: {
+                                ...current.llm,
+                                completeOnly: event.target.checked,
+                              },
+                            }))
+                          }
+                          className="h-4 w-4 rounded border-slate-300 text-[#007aff] focus:ring-[#007aff]"
+                        />
+                      </label>
+                    </section>
+
+                    <section className="space-y-4">
+                      <div>
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-slate-400">
                           AI Providers
                         </p>
                         <p className="mt-1 text-sm text-slate-500">
@@ -2600,6 +2832,7 @@ function App() {
 
       {sidebarContextMenu && sidebarContextRecord ? (
         <div
+          onPointerDown={(event) => event.stopPropagation()}
           className="fixed z-[65] min-w-[220px] rounded-xl border border-slate-200 bg-white p-1.5 shadow-[0_16px_40px_rgba(15,23,42,0.16)]"
           style={{
             left: Math.min(sidebarContextMenu.x, window.innerWidth - 236),

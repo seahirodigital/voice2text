@@ -19,11 +19,13 @@ from moonshine_voice.transcriber import (
 )
 
 from app.models.schemas import (
+    LlmSettings,
     SessionDetail,
     StartSessionPayload,
     TranscriptSegment,
     utc_now_iso,
 )
+from app.services.ollama_client import OllamaClient
 from app.services.session_store import SessionStore
 from app.services.settings_service import MODEL_PRESET_CANDIDATES
 from app.services.speaker_labeler import SpeakerLabeler
@@ -100,12 +102,14 @@ class LiveTranscriptionSession:
         models_root: Path,
         update_interval_ms: int,
         enable_word_timestamps: bool,
+        llm_settings: LlmSettings,
     ) -> None:
         self.loop = loop
         self.store = store
         self.models_root = models_root
         self.update_interval_ms = update_interval_ms
         self.enable_word_timestamps = enable_word_timestamps
+        self.llm_settings = llm_settings
 
         self.context: SessionContext | None = None
         self.transcriber: Transcriber | None = None
@@ -114,6 +118,8 @@ class LiveTranscriptionSession:
         self.queue: asyncio.Queue[dict] = asyncio.Queue()
         self.raw_audio = bytearray()
         self.segments: dict[int, TranscriptSegment] = {}
+        self.llm_revisions: dict[int, int] = {}
+        self.llm_tasks = {}
         self.active = False
         self.paused = False
 
@@ -143,6 +149,10 @@ class LiveTranscriptionSession:
         self.labeler = SpeakerLabeler(payload.max_speakers)
         self.raw_audio = bytearray()
         self.segments = {}
+        self.llm_revisions = {}
+        self._cancel_llm_tasks()
+        if payload.llm_settings is not None:
+            self.llm_settings = payload.llm_settings
 
         self.transcriber = Transcriber(
             model_path=model_path,
@@ -176,6 +186,21 @@ class LiveTranscriptionSession:
         self.paused = False
         self._put_nowait({"type": "resumed", "payload": {}})
 
+    def update_llm_settings(self, settings: LlmSettings) -> None:
+        self.llm_settings = settings
+        if not settings.enabled:
+            self._cancel_llm_tasks()
+        self._put_nowait(
+            {
+                "type": "llm_settings_updated",
+                "payload": settings.model_dump(by_alias=True),
+            }
+        )
+        if settings.enabled:
+            for line_id, segment in list(self.segments.items()):
+                if segment.text.strip():
+                    self._schedule_llm_refinement(line_id)
+
     def ingest_audio(self, frame_bytes: bytes) -> None:
         if not self.active or self.paused or self.transcriber is None or self.context is None:
             return
@@ -199,6 +224,7 @@ class LiveTranscriptionSession:
             moonshine_index,
         )
 
+        existing_segment = self.segments.get(line.line_id)
         segment = TranscriptSegment(
             id=f"line-{line.line_id}",
             lineId=line.line_id,
@@ -211,6 +237,12 @@ class LiveTranscriptionSession:
             isComplete=bool(line.is_complete),
             latencyMs=int(line.last_transcription_latency_ms),
             updatedAt=utc_now_iso(),
+            llmText=existing_segment.llm_text if existing_segment else None,
+            llmStatus=existing_segment.llm_status if existing_segment else "idle",
+            llmModel=existing_segment.llm_model if existing_segment else None,
+            llmLatencyMs=existing_segment.llm_latency_ms if existing_segment else None,
+            llmUpdatedAt=existing_segment.llm_updated_at if existing_segment else None,
+            llmError=existing_segment.llm_error if existing_segment else None,
         )
         self.segments[line.line_id] = segment
         self._put_nowait(
@@ -219,6 +251,7 @@ class LiveTranscriptionSession:
                 "payload": segment.model_dump(by_alias=True),
             }
         )
+        self._schedule_llm_refinement(line.line_id)
 
     def publish_error(self, message: str) -> None:
         self._put_nowait({"type": "error", "payload": {"message": message}})
@@ -277,12 +310,127 @@ class LiveTranscriptionSession:
         }
         self._put_nowait(payload)
         self.active = False
+        self._cancel_llm_tasks()
         return payload
 
     def shutdown(self) -> None:
         if not self.active:
             return
         self.finalize()
+        self._cancel_llm_tasks()
 
     def _put_nowait(self, payload: dict) -> None:
         self.loop.call_soon_threadsafe(self.queue.put_nowait, payload)
+
+    def _cancel_llm_tasks(self) -> None:
+        for task in self.llm_tasks.values():
+            task.cancel()
+        self.llm_tasks = {}
+
+    def _schedule_llm_refinement(self, line_id: int) -> None:
+        settings = self.llm_settings
+        segment = self.segments.get(line_id)
+        if (
+            not self.active
+            or not settings.enabled
+            or settings.provider != "ollama"
+            or segment is None
+            or not segment.text.strip()
+            or (settings.complete_only and not segment.is_complete)
+        ):
+            return
+
+        revision = self.llm_revisions.get(line_id, 0) + 1
+        self.llm_revisions[line_id] = revision
+
+        existing_task = self.llm_tasks.pop(line_id, None)
+        if existing_task is not None:
+            existing_task.cancel()
+
+        segment.llm_status = "pending"
+        segment.llm_model = settings.model
+        segment.llm_updated_at = utc_now_iso()
+        segment.llm_error = None
+        self._publish_llm_segment("llm_refinement_started", segment)
+
+        task = asyncio.run_coroutine_threadsafe(
+            self._refine_line_after_delay(
+                line_id,
+                revision,
+                settings.model_copy(deep=True),
+            ),
+            self.loop,
+        )
+        self.llm_tasks[line_id] = task
+
+    async def _refine_line_after_delay(
+        self,
+        line_id: int,
+        revision: int,
+        settings: LlmSettings,
+    ) -> None:
+        try:
+            if settings.debounce_ms > 0:
+                await asyncio.sleep(settings.debounce_ms / 1000)
+
+            if not self.active or self.llm_revisions.get(line_id) != revision:
+                return
+
+            context = self._build_refinement_context(line_id, settings.context_lines)
+            result = await OllamaClient(settings).refine(context)
+
+            if not self.active or self.llm_revisions.get(line_id) != revision:
+                return
+
+            segment = self.segments.get(line_id)
+            if segment is None:
+                return
+
+            segment.llm_text = result.text
+            segment.llm_status = "complete"
+            segment.llm_model = settings.model
+            segment.llm_latency_ms = result.latency_ms
+            segment.llm_updated_at = utc_now_iso()
+            segment.llm_error = None
+            self._publish_llm_segment("llm_refinement_updated", segment)
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            if not self.active or self.llm_revisions.get(line_id) != revision:
+                return
+            segment = self.segments.get(line_id)
+            if segment is None:
+                return
+            segment.llm_status = "error"
+            segment.llm_model = settings.model
+            segment.llm_updated_at = utc_now_iso()
+            segment.llm_error = str(exc)
+            self._publish_llm_segment("llm_refinement_error", segment)
+
+    def _build_refinement_context(self, line_id: int, context_lines: int) -> str:
+        ordered_segments = [
+            self.segments[key] for key in sorted(self.segments, key=lambda item: item)
+        ]
+        current_index = next(
+            (
+                index
+                for index, segment in enumerate(ordered_segments)
+                if segment.line_id == line_id
+            ),
+            len(ordered_segments) - 1,
+        )
+        start_index = max(0, current_index - max(0, context_lines - 1))
+        context_segments = ordered_segments[start_index : current_index + 1]
+        lines = []
+        for segment in context_segments:
+            marker = "CURRENT" if segment.line_id == line_id else "CONTEXT"
+            lines.append(f"{marker} {segment.speaker_label}: {segment.text}")
+        return "Refine only the CURRENT line.\n" + "\n".join(lines)
+
+    def _publish_llm_segment(self, event_type: str, segment: TranscriptSegment) -> None:
+        self._put_nowait(
+            {
+                "type": event_type,
+                "payload": segment.model_dump(by_alias=True),
+            }
+        )

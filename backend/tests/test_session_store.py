@@ -92,3 +92,29 @@ def test_update_transcript_keeps_locked_title(tmp_path: Path):
 
     assert updated is not None
     assert updated.title == "Pinned Title"
+
+
+def test_delete_session_removes_stale_index_entry(tmp_path: Path):
+    sessions_root = tmp_path / "sessions"
+    recordings_root = tmp_path / "recordings"
+    store = SessionStore(sessions_root=sessions_root, recordings_root=recordings_root)
+
+    detail = SessionDetail.model_validate(
+        {
+            "id": "session-stale",
+            "createdAt": "2026-04-19T10:00:00Z",
+            "updatedAt": "2026-04-19T10:00:00Z",
+            "language": "ja",
+            "deviceLabel": "Test Mic",
+            "durationSeconds": 0,
+            "lineCount": 0,
+            "title": "Stale Entry",
+            "audioUrl": None,
+            "segments": [],
+        }
+    )
+    store.save_session(detail)
+    (sessions_root / "session-stale.json").unlink()
+
+    assert store.delete_session("session-stale") is True
+    assert store.list_sessions() == []

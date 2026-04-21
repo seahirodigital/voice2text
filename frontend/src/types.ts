@@ -37,6 +37,15 @@ export interface AppSettings {
       anthropic: ProviderConfig;
     };
   };
+  llm: {
+    enabled: boolean;
+    provider: "ollama";
+    baseUrl: string;
+    model: string;
+    contextLines: number;
+    debounceMs: number;
+    completeOnly: boolean;
+  };
 }
 
 export interface ResolvedPaths {
@@ -66,6 +75,12 @@ export interface TranscriptSegment {
   isComplete: boolean;
   latencyMs: number;
   updatedAt: string;
+  llmText?: string | null;
+  llmStatus?: "idle" | "pending" | "complete" | "error";
+  llmModel?: string | null;
+  llmLatencyMs?: number | null;
+  llmUpdatedAt?: string | null;
+  llmError?: string | null;
 }
 
 export interface SessionSummary {
@@ -95,4 +110,3 @@ export interface SocketMessage {
   type: string;
   payload: Record<string, unknown>;
 }
-

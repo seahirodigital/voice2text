@@ -25,6 +25,18 @@ class ApiSettings(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+class LlmSettings(BaseModel):
+    enabled: bool = False
+    provider: Literal["ollama"] = "ollama"
+    base_url: str = Field(default="http://localhost:11434", alias="baseUrl")
+    model: str = "gemma4:e2b"
+    context_lines: int = Field(default=3, alias="contextLines", ge=1, le=20)
+    debounce_ms: int = Field(default=1200, alias="debounceMs", ge=0, le=10000)
+    complete_only: bool = Field(default=False, alias="completeOnly")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
 class PathSettings(BaseModel):
     models_root: str = Field(alias="modelsRoot")
     data_root: str = Field(alias="dataRoot")
@@ -52,6 +64,7 @@ class AppSettings(BaseModel):
     paths: PathSettings
     transcription: TranscriptionSettings
     api_settings: ApiSettings = Field(alias="apiSettings")
+    llm: LlmSettings = LlmSettings()
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -89,6 +102,14 @@ class TranscriptSegment(BaseModel):
     is_complete: bool = Field(alias="isComplete")
     latency_ms: int = Field(alias="latencyMs")
     updated_at: str = Field(alias="updatedAt")
+    llm_text: str | None = Field(default=None, alias="llmText")
+    llm_status: Literal["idle", "pending", "complete", "error"] = Field(
+        default="idle", alias="llmStatus"
+    )
+    llm_model: str | None = Field(default=None, alias="llmModel")
+    llm_latency_ms: int | None = Field(default=None, alias="llmLatencyMs")
+    llm_updated_at: str | None = Field(default=None, alias="llmUpdatedAt")
+    llm_error: str | None = Field(default=None, alias="llmError")
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -139,6 +160,7 @@ class StartSessionPayload(BaseModel):
     channels: int = Field(default=1, ge=1, le=2)
     device_label: str = Field(default="Default Microphone", alias="deviceLabel")
     max_speakers: int = Field(default=3, alias="maxSpeakers", ge=1, le=3)
+    llm_settings: LlmSettings | None = Field(default=None, alias="llm")
 
     model_config = ConfigDict(populate_by_name=True)
 

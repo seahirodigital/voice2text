@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from app.config import resolve_paths
 from app.models.schemas import (
     AppSettings,
+    LlmSettings,
     SessionTitleUpdatePayload,
     StartSessionPayload,
     TranscriptUpdatePayload,
@@ -54,10 +55,11 @@ def get_frontend_dist() -> Path:
 
 
 def open_in_explorer(path: Path) -> None:
-    if path.is_file():
-        subprocess.run(["explorer", "/select,", str(path)], check=False)
+    resolved_path = path.resolve()
+    if resolved_path.is_file():
+        subprocess.Popen(["explorer.exe", f"/select,{resolved_path}"])
         return
-    subprocess.run(["explorer", str(path)], check=False)
+    subprocess.Popen(["explorer.exe", str(resolved_path)])
 
 
 def open_windows_directory_picker(initial_dir: Path) -> str | None:
@@ -199,6 +201,7 @@ async def transcription_socket(websocket: WebSocket):
         models_root=Path(paths.models_root),
         update_interval_ms=settings.transcription.update_interval_ms,
         enable_word_timestamps=settings.transcription.enable_word_timestamps,
+        llm_settings=settings.llm,
     )
 
     async def sender() -> None:
@@ -228,6 +231,9 @@ async def transcription_socket(websocket: WebSocket):
             if envelope.type == "start_session":
                 payload = StartSessionPayload.model_validate(envelope.payload)
                 session.start(payload)
+            elif envelope.type == "update_llm_settings":
+                payload = LlmSettings.model_validate(envelope.payload)
+                session.update_llm_settings(payload)
             elif envelope.type == "pause_session":
                 session.pause()
             elif envelope.type == "resume_session":

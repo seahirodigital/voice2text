@@ -8,4 +8,10 @@ backend/.mypy_cache/
 *.pyd
 tmp-*.log
 tmp-*.err.log
+tmp-dev-logs/
 .pytest_cache/
+pytest-cache-files-*/
+tmp-pytest/
+.pytest_tmp*/
+LLM/models/
+LLM/logs/

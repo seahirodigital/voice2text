@@ -31,6 +31,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "anthropic": {"apiKey": "", "model": ""},
         },
     },
+    "llm": {
+        "enabled": False,
+        "provider": "ollama",
+        "baseUrl": "http://localhost:11434",
+        "model": "gemma4:e2b",
+        "contextLines": 3,
+        "debounceMs": 1200,
+        "completeOnly": False,
+    },
 }
 
 

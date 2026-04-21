@@ -7,7 +7,7 @@
   },
   "transcription": {
     "language": "ja",
-    "modelPreset": "base",
+    "modelPreset": "tiny",
     "maxSpeakers": 3,
     "updateIntervalMs": 5000,
     "enableWordTimestamps": false
@@ -24,5 +24,14 @@
         "model": ""
       }
     }
+  },
+  "llm": {
+    "enabled": true,
+    "provider": "ollama",
+    "baseUrl": "http://localhost:11434",
+    "model": "gemma4:e2b",
+    "contextLines": 3,
+    "debounceMs": 1200,
+    "completeOnly": false
   }
 }

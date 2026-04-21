@@ -32,7 +32,14 @@ class SessionStore:
 
     def list_sessions(self) -> list[SessionSummary]:
         raw_index = self._read_index()
-        return [SessionSummary.model_validate(entry) for entry in raw_index]
+        existing_entries = [
+            entry
+            for entry in raw_index
+            if (self.sessions_root / f"{entry.get('id')}.json").exists()
+        ]
+        if len(existing_entries) != len(raw_index):
+            self._write_index(existing_entries)
+        return [SessionSummary.model_validate(entry) for entry in existing_entries]
 
     def get_session(self, session_id: str) -> SessionDetail | None:
         detail_path = self.sessions_root / f"{session_id}.json"
@@ -64,9 +71,19 @@ class SessionStore:
         if detail is None:
             return None
 
-        detail.segments = segments
-        detail.updated_at = segments[-1].updated_at if segments else detail.updated_at
-        detail.line_count = len(segments)
+        normalized_segments = [
+            segment
+            if isinstance(segment, TranscriptSegment)
+            else TranscriptSegment.model_validate(segment)
+            for segment in segments
+        ]
+        detail.segments = normalized_segments
+        detail.updated_at = (
+            normalized_segments[-1].updated_at
+            if normalized_segments
+            else detail.updated_at
+        )
+        detail.line_count = len(normalized_segments)
         if title is not None:
             normalized_title = self._normalize_title(title)
             detail.title = normalized_title
@@ -75,7 +92,7 @@ class SessionStore:
             if detail.audio_url:
                 detail.audio_url = self._rename_recording(detail.audio_url, normalized_title)
         elif not detail.title_locked:
-            detail.title = self._derive_title(segments)
+            detail.title = self._derive_title(normalized_segments)
         summary = self.save_session(detail)
         return SessionDetail.model_validate(
             {
@@ -108,6 +125,11 @@ class SessionStore:
     def delete_session(self, session_id: str) -> bool:
         detail = self.get_session(session_id)
         if detail is None:
+            raw_index = self._read_index()
+            summaries = [entry for entry in raw_index if entry.get("id") != session_id]
+            if len(summaries) != len(raw_index):
+                self._write_index(summaries)
+                return True
             return False
 
         detail_path = self.sessions_root / f"{session_id}.json"
