@@ -221,8 +221,14 @@ interface RecordView {
 
 interface SidebarContextMenuState {
   recordId: string;
+  targetIds: string[];
   x: number;
   y: number;
+}
+
+interface DeletedSessionsUndoEntry {
+  sessionIds: string[];
+  preferredSessionId: string | null;
 }
 
 interface SpeakerRenameState {
@@ -452,6 +458,19 @@ function parseDate(value?: string | null) {
   }
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function isEditableEventTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+  const tagName = target.tagName.toLowerCase();
+  return (
+    tagName === "input" ||
+    tagName === "textarea" ||
+    tagName === "select" ||
+    target.isContentEditable
+  );
 }
 
 function formatSidebarDate(value?: string | null) {
@@ -891,6 +910,9 @@ function App() {
   );
   const [sidebarContextMenu, setSidebarContextMenu] =
     useState<SidebarContextMenuState | null>(null);
+  const [deletedSessionsUndoStack, setDeletedSessionsUndoStack] = useState<
+    DeletedSessionsUndoEntry[]
+  >([]);
   const [historySortOrder, setHistorySortOrder] = useState<"newest" | "oldest">(
     "newest",
   );
@@ -920,6 +942,7 @@ function App() {
   const [liveSessionStartedAt, setLiveSessionStartedAt] = useState<string | null>(
     null,
   );
+  const [liveCaptureElapsedMs, setLiveCaptureElapsedMs] = useState(0);
   const [liveTitleOverride, setLiveTitleOverride] = useState<string | null>(null);
   const [titleDraft, setTitleDraft] = useState("");
   const [isEditingTitle, setIsEditingTitle] = useState(false);
@@ -954,6 +977,9 @@ function App() {
   const inputGainDbRef = useRef(INPUT_GAIN_DEFAULT_DB);
   const statusRef = useRef<RecordingStatus>("idle");
   const isLiveSessionRef = useRef(false);
+  const liveCaptureBaseElapsedMsRef = useRef(0);
+  const liveCaptureStartedPerfRef = useRef<number | null>(null);
+  const restoreDeletedSessionsInFlightRef = useRef(false);
   const pendingLiveTitleRef = useRef<string | null>(null);
   const draftSettingsRef = useRef<AppSettings | null>(null);
   const settingsAutoSaveTimeoutRef = useRef<number | null>(null);
@@ -988,6 +1014,38 @@ function App() {
     [],
   );
 
+  const resetLiveCaptureTimer = useCallback((nextElapsedMs = 0) => {
+    liveCaptureBaseElapsedMsRef.current = nextElapsedMs;
+    liveCaptureStartedPerfRef.current = null;
+    setLiveCaptureElapsedMs(nextElapsedMs);
+  }, []);
+
+  const pauseLiveCaptureTimer = useCallback(() => {
+    const startedPerf = liveCaptureStartedPerfRef.current;
+    if (startedPerf === null) {
+      setLiveCaptureElapsedMs(liveCaptureBaseElapsedMsRef.current);
+      return;
+    }
+
+    const nextElapsedMs =
+      liveCaptureBaseElapsedMsRef.current + (performance.now() - startedPerf);
+    liveCaptureBaseElapsedMsRef.current = nextElapsedMs;
+    liveCaptureStartedPerfRef.current = null;
+    setLiveCaptureElapsedMs(nextElapsedMs);
+  }, []);
+
+  const updateLiveCaptureTimer = useCallback(() => {
+    const startedPerf = liveCaptureStartedPerfRef.current;
+    if (startedPerf === null) {
+      setLiveCaptureElapsedMs(liveCaptureBaseElapsedMsRef.current);
+      return;
+    }
+
+    setLiveCaptureElapsedMs(
+      liveCaptureBaseElapsedMsRef.current + (performance.now() - startedPerf),
+    );
+  }, []);
+
   useEffect(() => {
     statusRef.current = status;
   }, [status]);
@@ -1010,6 +1068,25 @@ function App() {
       0.015,
     );
   }, [inputGainDb]);
+
+  useEffect(() => {
+    if (status !== "recording") {
+      pauseLiveCaptureTimer();
+      return;
+    }
+
+    if (liveCaptureStartedPerfRef.current === null) {
+      liveCaptureStartedPerfRef.current = performance.now();
+    }
+
+    updateLiveCaptureTimer();
+    const handle = window.setInterval(updateLiveCaptureTimer, 250);
+
+    return () => {
+      window.clearInterval(handle);
+      pauseLiveCaptureTimer();
+    };
+  }, [pauseLiveCaptureTimer, status, updateLiveCaptureTimer]);
 
   useEffect(() => {
     if (typeof window === "undefined" || !deviceId) {
@@ -1325,8 +1402,12 @@ function App() {
       const sessionId = String(message.payload.sessionId ?? "");
       const createdAt = String(message.payload.createdAt ?? new Date().toISOString());
       const title = String(message.payload.title ?? formatSessionTitle(createdAt));
+      const createdAtMs = Date.parse(createdAt);
       setCurrentSessionId(sessionId);
       setLiveSessionStartedAt(createdAt);
+      resetLiveCaptureTimer(
+        Number.isNaN(createdAtMs) ? 0 : Math.max(0, Date.now() - createdAtMs),
+      );
       setLiveTitleOverride(title);
       setTitleDraft(title);
       setStatus("recording");
@@ -1481,6 +1562,7 @@ function App() {
     }
 
     clearConnectionTimeout();
+    resetLiveCaptureTimer();
     setError(null);
     setStatus("connecting");
     setRecognitionStopped(false);
@@ -2048,25 +2130,57 @@ function App() {
       return;
     }
 
+    const deletedIds: string[] = [];
     try {
       for (const sessionId of uniqueIds) {
         await apiFetch<{ deleted: boolean }>(`/api/sessions/${sessionId}`, {
           method: "DELETE",
         });
+        deletedIds.push(sessionId);
       }
     } catch (deleteError) {
+      if (deletedIds.length > 0) {
+        setDeletedSessionsUndoStack((current) => [
+          ...current,
+          {
+            sessionIds: deletedIds,
+            preferredSessionId:
+              selectedSessionId && deletedIds.includes(selectedSessionId)
+                ? selectedSessionId
+                : null,
+          },
+        ]);
+      }
       setError(
         deleteError instanceof Error
-          ? deleteError.message
+          ? deletedIds.length > 0
+            ? `Some selected records were deleted before the request failed. Press Ctrl+Z to restore them.\n${deleteError.message}`
+            : deleteError.message
           : "Failed to delete the selected records.",
       );
       await refreshHistory();
       return;
     }
 
+    setDeletedSessionsUndoStack((current) => [
+      ...current,
+      {
+        sessionIds: uniqueIds,
+        preferredSessionId:
+          selectedSessionId && uniqueIds.includes(selectedSessionId)
+            ? selectedSessionId
+            : null,
+      },
+    ]);
     setSidebarSelectedRecordIds((current) =>
       current.filter((sessionId) => !uniqueIds.includes(sessionId)),
     );
+    if (
+      lastSidebarSelectedRecordIdRef.current &&
+      uniqueIds.includes(lastSidebarSelectedRecordIdRef.current)
+    ) {
+      lastSidebarSelectedRecordIdRef.current = null;
+    }
 
     const sessions = await refreshHistory();
     if (selectedSessionId && uniqueIds.includes(selectedSessionId)) {
@@ -2080,6 +2194,53 @@ function App() {
         setActiveTranscriptView("realtime");
         setCurrentAudioUrl(null);
       }
+    }
+  };
+
+  const restoreDeletedSessions = async () => {
+    const undoEntry = deletedSessionsUndoStack.at(-1);
+    if (!undoEntry || restoreDeletedSessionsInFlightRef.current) {
+      return;
+    }
+
+    restoreDeletedSessionsInFlightRef.current = true;
+    setDeletedSessionsUndoStack((current) => current.slice(0, -1));
+
+    try {
+      for (const sessionId of undoEntry.sessionIds) {
+        await apiFetch<SessionDetail>(`/api/sessions/${sessionId}/restore`, {
+          method: "POST",
+        });
+      }
+
+      const sessions = await refreshHistory();
+      const restoredIds = undoEntry.sessionIds.filter((sessionId) =>
+        sessions.some((session) => session.id === sessionId),
+      );
+      if (restoredIds.length === 0) {
+        return;
+      }
+
+      setSidebarSelectionMode(restoredIds.length > 1);
+      setSidebarSelectedRecordIds(restoredIds);
+      lastSidebarSelectedRecordIdRef.current = restoredIds.at(-1) ?? null;
+
+      if (
+        undoEntry.preferredSessionId &&
+        restoredIds.includes(undoEntry.preferredSessionId)
+      ) {
+        await loadSession(undoEntry.preferredSessionId);
+      }
+    } catch (restoreError) {
+      setDeletedSessionsUndoStack((current) => [...current, undoEntry]);
+      setError(
+        restoreError instanceof Error
+          ? restoreError.message
+          : "Failed to restore the deleted records.",
+      );
+      await refreshHistory();
+    } finally {
+      restoreDeletedSessionsInFlightRef.current = false;
     }
   };
 
@@ -2704,14 +2865,18 @@ function App() {
     promptList[0] ??
     null;
   const generatedLiveTitle = formatSessionTitle(liveSessionStartedAt);
-  const totalDuration = deferredSegments.at(-1)
+  const transcriptDuration = deferredSegments.at(-1)
     ? deferredSegments.at(-1)!.startedAt + deferredSegments.at(-1)!.duration
     : 0;
+  const liveCaptureDurationSeconds = liveCaptureElapsedMs / 1000;
   const selectedDevice =
     devices.find((entry) => entry.deviceId === deviceId) ?? devices[0] ?? null;
   const allHistoryRecords = history.map(toHistoryRecord);
   const selectedHistoryRecord =
     allHistoryRecords.find((record) => record.id === selectedSessionId) ?? null;
+  const totalDuration = hasActiveCapture
+    ? liveCaptureDurationSeconds
+    : (selectedHistoryRecord?.durationSeconds ?? transcriptDuration);
 
   const liveRecord: RecordView | null = hasActiveCapture
     ? {
@@ -2720,7 +2885,7 @@ function App() {
         createdAt: liveSessionStartedAt ?? new Date().toISOString(),
         language: draftSettings?.transcription.language ?? "ja",
         deviceLabel: selectedDevice?.label || "Current microphone",
-        durationSeconds: totalDuration,
+        durationSeconds: liveCaptureDurationSeconds,
         lineCount: timelineSegments.length,
         audioUrl: null,
         summary: selectedDevice?.label || "Live capture",
@@ -2769,13 +2934,11 @@ function App() {
   const sidebarContextRecord = sidebarContextMenu
     ? sidebarHistoryRecordMap.get(sidebarContextMenu.recordId) ?? null
     : null;
-  const sidebarContextDeleteIds =
-    sidebarContextRecord && validSidebarSelectedRecordIds.length > 0
-      ? validSidebarSelectedRecordIds
-      : sidebarContextRecord
-        ? [sidebarContextRecord.id]
-        : [];
-  const sidebarContextActionIds = sidebarContextDeleteIds;
+  const sidebarContextActionIds =
+    sidebarContextMenu?.targetIds.filter((sessionId) =>
+      sidebarHistoryRecordMap.has(sessionId),
+    ) ?? [];
+  const sidebarContextDeleteIds = sidebarContextActionIds;
   const sidebarContextMinutesCount = sidebarContextActionIds.filter((sessionId) => {
     const record = sidebarHistoryRecordMap.get(sessionId);
     return (
@@ -2994,6 +3157,29 @@ function App() {
       window.removeEventListener("keydown", handleEscape);
     };
   }, [sidebarContextMenu]);
+
+  useEffect(() => {
+    const handleUndoDeletedSessions = (event: KeyboardEvent) => {
+      if (
+        deletedSessionsUndoStack.length === 0 ||
+        event.altKey ||
+        event.shiftKey ||
+        !(event.ctrlKey || event.metaKey) ||
+        event.key.toLowerCase() !== "z" ||
+        isEditableEventTarget(event.target)
+      ) {
+        return;
+      }
+
+      event.preventDefault();
+      void restoreDeletedSessions();
+    };
+
+    window.addEventListener("keydown", handleUndoDeletedSessions);
+    return () => {
+      window.removeEventListener("keydown", handleUndoDeletedSessions);
+    };
+  }, [deletedSessionsUndoStack, restoreDeletedSessions]);
 
   useEffect(() => {
     if (!hasActiveCapture || deferredSegments.length === 0) {
@@ -3247,8 +3433,15 @@ function App() {
                       return;
                     }
                     event.preventDefault();
+                    const targetIds =
+                      sidebarSelectionMode &&
+                      isBulkSelected &&
+                      validSidebarSelectedRecordIds.length > 0
+                        ? validSidebarSelectedRecordIds
+                        : [record.id];
                     setSidebarContextMenu({
                       recordId: record.id,
+                      targetIds,
                       x: event.clientX,
                       y: event.clientY,
                     });
@@ -3727,18 +3920,19 @@ function App() {
           <div className="flex items-center gap-2">
             {promptList.length > 0 ? (
               <label className="hidden items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 sm:flex">
-                <span className="whitespace-nowrap text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">
-                  使用プロンプト
+                <span className="whitespace-nowrap text-[12px] font-bold uppercase tracking-[0.18em] text-slate-400">
+                  用途
                 </span>
                 <select
                   value={activePromptId}
                   onChange={(event) => selectActivePrompt(event.target.value)}
                   disabled={!draftSettings || promptList.length === 0}
-                  className="max-w-[14rem] bg-transparent text-sm font-semibold text-slate-700 outline-none disabled:cursor-not-allowed disabled:opacity-40"
-                  aria-label="使用プロンプトを選択"
+                  className="max-w-[14rem] bg-transparent pr-6 text-[12px] font-semibold leading-none text-slate-700 outline-none disabled:cursor-not-allowed disabled:opacity-40"
+                  aria-label="用途を選択"
+                  style={{ fontSize: "12px" }}
                 >
                   {promptList.map((prompt) => (
-                    <option key={prompt.id} value={prompt.id}>
+                    <option key={prompt.id} value={prompt.id} style={{ fontSize: "12px" }}>
                       {prompt.name}
                     </option>
                   ))}
@@ -3750,11 +3944,12 @@ function App() {
                 <button
                   type="button"
                   onClick={() => setActiveTranscriptView("realtime")}
-                  className={`inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[11px] font-semibold transition-colors ${
+                  className={`inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[12px] font-semibold transition-colors ${
                     activeTranscriptView === "realtime"
                       ? "bg-[#007aff] text-white"
                       : "text-[#007aff] hover:bg-[#007aff]/10"
                   }`}
+                  style={{ fontSize: "12px" }}
                 >
                   <AlignLeft className="size-3.5" />
                   リアルタイム
@@ -3762,11 +3957,12 @@ function App() {
                 <button
                   type="button"
                   onClick={() => setActiveTranscriptView("minutes")}
-                  className={`inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[11px] font-semibold transition-colors ${
+                  className={`inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[12px] font-semibold transition-colors ${
                     activeTranscriptView === "minutes"
                       ? "bg-[#007aff] text-white"
                       : "text-[#007aff] hover:bg-[#007aff]/10"
                   }`}
+                  style={{ fontSize: "12px" }}
                 >
                   <FileText className="size-3.5" />
                   ミニッツ
@@ -4162,7 +4358,10 @@ function App() {
                               </div>
                             ) : null}
 
-                            {showLlmRefined ? (
+                            {showLlmRefined &&
+                            (segment.llmText ||
+                              segment.llmStatus === "pending" ||
+                              segment.llmStatus === "error") ? (
                               <div className="mt-2 min-w-0 rounded-xl bg-slate-50 px-3 py-2 transition-all duration-300 lg:mt-0">
                                 {segment.llmStatus === "pending" ? (
                                   <p className="text-[11px] font-semibold text-slate-400">
@@ -4175,7 +4374,7 @@ function App() {
                                   >
                                     整形に失敗しました
                                   </p>
-                                ) : segment.llmText ? (
+                                ) : (
                                   <p
                                     className="whitespace-pre-wrap text-slate-900"
                                     style={{
@@ -4185,14 +4384,6 @@ function App() {
                                     }}
                                   >
                                     {segment.llmText}
-                                  </p>
-                                ) : segment.llmStatus === "complete" ? (
-                                  <p className="text-[11px] font-semibold text-slate-300">
-                                    上の塊に含まれています
-                                  </p>
-                                ) : (
-                                  <p className="text-[11px] font-semibold text-slate-300">
-                                    未整形
                                   </p>
                                 )}
                               </div>

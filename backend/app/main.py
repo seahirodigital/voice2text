@@ -215,6 +215,15 @@ async def delete_session(session_id: str):
     return JSONResponse({"deleted": True})
 
 
+@app.post("/api/sessions/{session_id}/restore")
+async def restore_session(session_id: str):
+    store = get_store()
+    detail = store.restore_session(session_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return detail
+
+
 @app.post("/api/sessions/{session_id}/open-recording")
 async def open_session_recording(session_id: str):
     store = get_store()
@@ -229,7 +238,7 @@ async def open_session_recording(session_id: str):
         raise HTTPException(status_code=404, detail="Recording not found")
 
     try:
-        await asyncio.to_thread(open_in_explorer, recording_path)
+        await asyncio.to_thread(open_in_explorer, recording_path.parent)
     except OSError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return JSONResponse({"opened": True})

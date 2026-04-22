@@ -179,3 +179,40 @@ def test_delete_session_removes_stale_index_entry(tmp_path: Path):
 
     assert store.delete_session("session-stale") is True
     assert store.list_sessions() == []
+
+
+def test_delete_session_can_be_restored_with_recording(tmp_path: Path):
+    sessions_root = tmp_path / "sessions"
+    recordings_root = tmp_path / "recordings"
+    store = SessionStore(sessions_root=sessions_root, recordings_root=recordings_root)
+
+    audio_path = recordings_root / "session-restore.wav"
+    _write_pcm_wav(audio_path)
+
+    detail = SessionDetail.model_validate(
+        {
+            "id": "session-restore",
+            "createdAt": "2026-04-19T10:00:00Z",
+            "updatedAt": "2026-04-19T10:00:00Z",
+            "language": "ja",
+            "deviceLabel": "Test Mic",
+            "durationSeconds": 1.2,
+            "lineCount": 1,
+            "title": "Restore Me",
+            "audioUrl": "/recordings/session-restore.wav",
+            "segments": [],
+        }
+    )
+    store.save_session(detail)
+
+    assert store.delete_session("session-restore") is True
+    assert store.get_session("session-restore") is None
+    assert not audio_path.exists()
+
+    restored = store.restore_session("session-restore")
+
+    assert restored is not None
+    assert restored.id == "session-restore"
+    assert restored.audio_url == "/recordings/session-restore.wav"
+    assert (recordings_root / "session-restore.wav").exists()
+    assert [session.id for session in store.list_sessions()] == ["session-restore"]

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -25,8 +26,10 @@ class SessionStore:
         self.sessions_root = sessions_root
         self.recordings_root = recordings_root
         self.index_path = sessions_root / "index.json"
+        self.trash_root = sessions_root / ".trash"
         self.sessions_root.mkdir(parents=True, exist_ok=True)
         self.recordings_root.mkdir(parents=True, exist_ok=True)
+        self.trash_root.mkdir(parents=True, exist_ok=True)
         if not self.index_path.exists():
             self._write_index([])
 
@@ -199,17 +202,57 @@ class SessionStore:
             return False
 
         detail_path = self.sessions_root / f"{session_id}.json"
+        trash_dir = self._trash_session_dir(session_id)
+        if trash_dir.exists():
+            shutil.rmtree(trash_dir)
+        trash_dir.mkdir(parents=True, exist_ok=True)
+
         if detail_path.exists():
-            detail_path.unlink()
+            detail_path.rename(trash_dir / detail_path.name)
 
         if detail.audio_url:
             audio_path = self.recordings_root / Path(detail.audio_url).name
             if audio_path.exists():
-                audio_path.unlink()
+                audio_path.rename(trash_dir / audio_path.name)
 
         summaries = [item for item in self.list_sessions() if item.id != session_id]
         self._write_index(summaries)
         return True
+
+    def restore_session(self, session_id: str) -> SessionDetail | None:
+        detail_path = self.sessions_root / f"{session_id}.json"
+        if detail_path.exists():
+            return self.get_session(session_id)
+
+        trash_dir = self._trash_session_dir(session_id)
+        trashed_detail_path = trash_dir / f"{session_id}.json"
+        if not trashed_detail_path.exists():
+            return None
+
+        detail = SessionDetail.model_validate_json(
+            trashed_detail_path.read_text(encoding="utf-8")
+        )
+
+        if detail.audio_url:
+            trashed_audio_path = trash_dir / Path(detail.audio_url).name
+            if trashed_audio_path.exists():
+                restored_audio_path = self._unique_recording_path(
+                    Path(detail.audio_url).stem,
+                    extension=trashed_audio_path.suffix,
+                )
+                trashed_audio_path.rename(restored_audio_path)
+                detail.audio_url = f"/recordings/{restored_audio_path.name}"
+            else:
+                detail.audio_url = None
+
+        summary = self.save_session(detail)
+        shutil.rmtree(trash_dir, ignore_errors=True)
+        return SessionDetail.model_validate(
+            {
+                **detail.model_dump(by_alias=True),
+                **summary.model_dump(by_alias=True),
+            }
+        )
 
     def save_recording(
         self,
@@ -288,6 +331,9 @@ class SessionStore:
             if not candidate.exists():
                 return candidate
             index += 1
+
+    def _trash_session_dir(self, session_id: str) -> Path:
+        return self.trash_root / session_id
 
     def _rename_recording(self, audio_url: str, title: str) -> str:
         current_path = self.recordings_root / Path(audio_url).name
