@@ -136,6 +136,7 @@ class LiveTranscriptionSession:
         self.llm_wake_event = asyncio.Event()
         self.active = False
         self.paused = False
+        self.recognition_stopped = False
 
     async def next_message(self) -> dict:
         return await self.queue.get()
@@ -170,6 +171,7 @@ class LiveTranscriptionSession:
         self.llm_pending_line_ids = set()
         self.llm_requested_at = {}
         self._cancel_llm_tasks()
+        self.recognition_stopped = False
         if payload.llm_settings is not None:
             self.llm_settings = payload.llm_settings
 
@@ -209,7 +211,7 @@ class LiveTranscriptionSession:
 
     def update_llm_settings(self, settings: LlmSettings) -> None:
         self.llm_settings = settings
-        if not settings.enabled:
+        if not settings.enabled or self.recognition_stopped:
             self._cancel_llm_tasks()
         self._put_nowait(
             {
@@ -217,18 +219,48 @@ class LiveTranscriptionSession:
                 "payload": settings.model_dump(by_alias=True),
             }
         )
-        if settings.enabled:
+        if settings.enabled and not self.recognition_stopped:
             for line_id, segment in list(self.segments.items()):
                 if segment.text.strip() and (
                     not settings.complete_only or segment.is_complete
                 ):
                     self._schedule_llm_refinement(line_id)
 
+    def stop_recognition(self) -> None:
+        if not self.active or self.recognition_stopped:
+            return
+
+        self.recognition_stopped = True
+        pending_line_ids = set(self.llm_pending_line_ids)
+        self._cancel_llm_tasks()
+        for line_id in pending_line_ids:
+            segment = self.segments.get(line_id)
+            if segment is None:
+                continue
+            segment.llm_status = "idle"
+            segment.llm_error = None
+            segment.llm_updated_at = utc_now_iso()
+            self._publish_llm_segment("llm_refinement_updated", segment)
+
+        if self.transcriber is not None:
+            self.transcriber.stop()
+            self.transcriber.close()
+        self.transcriber = None
+        self.listener = None
+        self._put_nowait(
+            {
+                "type": "recognition_stopped",
+                "payload": {"recordingOnly": True},
+            }
+        )
+
     def ingest_audio(self, frame_bytes: bytes) -> None:
-        if not self.active or self.paused or self.transcriber is None or self.context is None:
+        if not self.active or self.paused or self.context is None:
             return
 
         self.raw_audio.extend(frame_bytes)
+        if self.recognition_stopped or self.transcriber is None:
+            return
         pcm = np.frombuffer(frame_bytes, dtype="<i2").astype(np.float32) / 32768.0
         self.transcriber.add_audio(
             pcm.tolist(),
@@ -236,7 +268,7 @@ class LiveTranscriptionSession:
         )
 
     def publish_line(self, event_type: str, line) -> None:
-        if self.context is None:
+        if self.context is None or self.recognition_stopped:
             return
 
         moonshine_index = line.speaker_index if bool(line.has_speaker_id) else None
@@ -294,6 +326,8 @@ class LiveTranscriptionSession:
         if self.transcriber is not None:
             self.transcriber.stop()
             self.transcriber.close()
+        self.transcriber = None
+        self.listener = None
 
         ordered_segments = [
             self.segments[key] for key in sorted(self.segments, key=lambda item: item)
@@ -305,6 +339,12 @@ class LiveTranscriptionSession:
                 last_segment.started_at + last_segment.duration,
                 3,
             )
+        if self.raw_audio:
+            bytes_per_sample = 2
+            raw_duration = len(self.raw_audio) / (
+                self.context.browser_sample_rate * self.context.channels * bytes_per_sample
+            )
+            duration_seconds = max(duration_seconds, round(raw_duration, 3))
 
         derived_title = self.context.title
         audio_url = self.store.save_recording(
@@ -369,6 +409,7 @@ class LiveTranscriptionSession:
         segment = self.segments.get(line_id)
         if (
             not self.active
+            or self.recognition_stopped
             or not settings.enabled
             or settings.provider != "ollama"
             or segment is None

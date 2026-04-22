@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from app.models.schemas import AppSettings, ResolvedPaths
+from app.prompt_defaults import DEFAULT_PROMPT_SETTINGS
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = REPO_ROOT / "config.json"
@@ -46,32 +47,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "debounceMs": 5000,
         "maxWaitMs": 5000,
         "completeOnly": True,
-        "systemPrompt": (
-            "You are an editor for Japanese speech recognition output. "
-            "Rewrite the lines marked TARGET into one natural Japanese paragraph. "
-            "Use PREVIOUS lines only as context. Add punctuation and normalize kanji/kana. "
-            "Do not repeat PREVIOUS content. Output only information newly present in TARGET. "
-            "If TARGET overlaps with PREVIOUS, omit the duplicated part. "
-            "Do not add facts that are not present. Return only the refined paragraph."
-        ),
+        "systemPrompt": "",
     },
-    "promptSettings": {
-        "activePromptId": "default-cleanup",
-        "prompts": [
-            {
-                "id": "default-cleanup",
-                "name": "標準整形",
-                "content": (
-                    "You are an editor for Japanese speech recognition output. "
-                    "Rewrite the lines marked TARGET into one natural Japanese paragraph. "
-                    "Use PREVIOUS lines only as context. Add punctuation and normalize kanji/kana. "
-                    "Do not repeat PREVIOUS content. Output only information newly present in TARGET. "
-                    "If TARGET overlaps with PREVIOUS, omit the duplicated part. "
-                    "Do not add facts that are not present. Return only the refined paragraph."
-                ),
-            }
-        ],
-    },
+    "promptSettings": DEFAULT_PROMPT_SETTINGS,
 }
 
 

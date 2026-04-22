@@ -71,10 +71,10 @@ const SETTINGS_AUTOSAVE_DELAY_MS = 450;
 const TRANSCRIPT_COLUMN_GAP_PX = 16;
 const LLM_MODEL_OPTIONS = ["gemma4:e2b", "gemma4:e4b"];
 const DEVICE_ID_STORAGE_KEY = "voice2text.device-id";
-const DEFAULT_PROMPT_ID = "default-cleanup";
-const DEFAULT_PROMPT_NAME = "標準整形";
+const DEFAULT_PROMPT_ID = "meeting-minutes";
+const DEFAULT_PROMPT_NAME = "打ち合わせ議事録（汎用）";
 const DEFAULT_PROMPT_CONTENT =
-  "You are an editor for Japanese speech recognition output. Rewrite the lines marked TARGET into one natural Japanese paragraph. Use PREVIOUS lines only as context. Add punctuation and normalize kanji/kana. Do not repeat PREVIOUS content. Output only information newly present in TARGET. If TARGET overlaps with PREVIOUS, omit the duplicated part. Do not add facts that are not present. Return only the refined paragraph.";
+  "会議・打ち合わせの記録として、読み返してすぐ状況が分かる議事録に整形してください。\n\n## 出力形式\n- `# タイトル`\n- `## サマリー`\n- `## 決定事項`\n- `## TODO`\n- `## 論点・保留事項`\n- `## 詳細メモ`\n\n## 整形方針\n- 発言の重複や言い直しは整理してください。\n- 決定事項と未決事項を分けてください。\n- TODOは担当者、期限、内容が分かる場合だけ具体化してください。\n- 不明な担当者や期限は推測せず、`未定` と書いてください。";
 
 const LANGUAGE_LABELS: Record<string, string> = {
   ja: "Japanese",
@@ -116,6 +116,7 @@ const MIN_TRANSCRIPT_COLUMN_WIDTHS = {
 
 type TranscriptColumnKey = "speaker" | "time" | "transcript" | "llm";
 type TranscriptColumnWidths = Record<TranscriptColumnKey, number>;
+type DownloadFormat = "txt" | "md";
 
 type SettingsHelpTopic =
   | "transcription"
@@ -504,8 +505,9 @@ function formatLongClock(seconds: number) {
 function sanitizeFilename(value: string) {
   return (
     value
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/[<>:"/\\|?*]+/g, "-")
+      .replace(/\s+/g, " ")
+      .trim()
       .replace(/^-+|-+$/g, "") || "transcript"
   );
 }
@@ -528,7 +530,7 @@ function createDefaultPrompt(): PromptPreset {
   };
 }
 
-function normalizePromptName(value: string, fallback = "Untitled Prompt") {
+function normalizePromptName(value: string, fallback = "Untitled Template") {
   const normalized = value.replace(/\s+/g, " ").trim();
   return normalized || fallback;
 }
@@ -620,7 +622,7 @@ function parsePromptImport(raw: string): PromptPreset[] {
       }
       return {
         id: String(prompt.id ?? "").trim() || createPromptId(),
-        name: name || "Imported Prompt",
+        name: name || "Imported Template",
         content,
       };
     })
@@ -819,11 +821,28 @@ function buildExportText(segments: TranscriptSegment[], minutesMarkdown: string)
   const refined = minutesMarkdown.trim() || refinedBlocksToPlainText(segments);
   const raw = transcriptToPlainText(segments);
   return [
-    "# 整形済み文章",
-    refined || "整形済み文章はまだありません。",
+    "整形済み本文",
+    refined || "整形済み本文はまだありません。",
     "---",
-    "# 時系列の生データ",
-    raw || "生データはまだありません。",
+    "文字起こし原文",
+    raw || "文字起こし原文はまだありません。",
+  ].join("\n\n");
+}
+
+function buildExportMarkdown(
+  title: string,
+  segments: TranscriptSegment[],
+  minutesMarkdown: string,
+) {
+  const refined = minutesMarkdown.trim() || refinedBlocksToPlainText(segments);
+  const raw = transcriptToPlainText(segments);
+  return [
+    `# ${title}`,
+    "## 整形済み本文",
+    refined || "整形済み本文はまだありません。",
+    "---",
+    "## 文字起こし原文",
+    raw ? `\`\`\`text\n${raw}\n\`\`\`` : "文字起こし原文はまだありません。",
   ].join("\n\n");
 }
 
@@ -850,6 +869,7 @@ function App() {
   );
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [status, setStatus] = useState<RecordingStatus>("idle");
+  const [recognitionStopped, setRecognitionStopped] = useState(false);
   const [, setCurrentSessionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [waveform, setWaveform] = useState<number[]>(EMPTY_WAVEFORM);
@@ -858,6 +878,7 @@ function App() {
   const [openingRecordingId, setOpeningRecordingId] = useState<string | null>(null);
   const [minutesProcessingIds, setMinutesProcessingIds] = useState<string[]>([]);
   const [copied, setCopied] = useState(false);
+  const [downloadFormatMenuOpen, setDownloadFormatMenuOpen] = useState(false);
   const [editVersion, setEditVersion] = useState(0);
   const [recordFilter, setRecordFilter] = useState("");
   const [updateIntervalDraft, setUpdateIntervalDraft] = useState("");
@@ -1309,6 +1330,7 @@ function App() {
       setLiveTitleOverride(title);
       setTitleDraft(title);
       setStatus("recording");
+      setRecognitionStopped(false);
       return;
     }
 
@@ -1352,6 +1374,11 @@ function App() {
       return;
     }
 
+    if (message.type === "recognition_stopped") {
+      setRecognitionStopped(true);
+      return;
+    }
+
     if (message.type === "session_saved") {
       clearConnectionTimeout();
       const session = message.payload.session as unknown as SessionSummary;
@@ -1376,6 +1403,7 @@ function App() {
       setCurrentSessionId(session.id);
       lastLiveSegmentIdRef.current = null;
       setStatus("idle");
+      setRecognitionStopped(false);
       setError(null);
       closeSocket();
       return;
@@ -1389,6 +1417,7 @@ function App() {
       setLiveSessionStartedAt(null);
       pendingLiveTitleRef.current = null;
       lastLiveSegmentIdRef.current = null;
+      setRecognitionStopped(false);
       await teardownAudio();
       closeSocket();
     }
@@ -1454,6 +1483,7 @@ function App() {
     clearConnectionTimeout();
     setError(null);
     setStatus("connecting");
+    setRecognitionStopped(false);
     setCurrentSessionId(null);
     setCurrentAudioUrl(null);
     setSelectedSessionId(null);
@@ -1524,6 +1554,7 @@ function App() {
           setError("Failed to parse the transcription socket response.");
           isLiveSessionRef.current = false;
           setLiveSessionStartedAt(null);
+          setRecognitionStopped(false);
           void teardownAudio();
           closeSocket();
         }
@@ -1534,6 +1565,7 @@ function App() {
         setError("WebSocket connection failed.");
         isLiveSessionRef.current = false;
         setLiveSessionStartedAt(null);
+        setRecognitionStopped(false);
         void teardownAudio();
         closeSocket();
       };
@@ -1543,6 +1575,7 @@ function App() {
         }
         if (statusRef.current === "recording" || statusRef.current === "paused") {
           setStatus("idle");
+          setRecognitionStopped(false);
           return;
         }
         if (statusRef.current === "connecting") {
@@ -1551,6 +1584,7 @@ function App() {
           setError("Backend closed the transcription socket during session startup.");
           isLiveSessionRef.current = false;
           setLiveSessionStartedAt(null);
+          setRecognitionStopped(false);
           void teardownAudio();
         }
       };
@@ -1583,6 +1617,7 @@ function App() {
         );
         isLiveSessionRef.current = false;
         setLiveSessionStartedAt(null);
+        setRecognitionStopped(false);
         void teardownAudio();
         closeSocket();
       }, 12000);
@@ -1617,6 +1652,7 @@ function App() {
       pendingLiveTitleRef.current = null;
       setLiveTitleOverride(null);
       lastLiveSegmentIdRef.current = null;
+      setRecognitionStopped(false);
     }
   };
 
@@ -1636,6 +1672,19 @@ function App() {
     await audioContextRef.current?.resume();
     wsRef.current?.send(JSON.stringify({ type: "resume_session", payload: {} }));
     setStatus("recording");
+  };
+
+  const stopRecognitionOnly = () => {
+    if (
+      status !== "recording" ||
+      recognitionStopped ||
+      !wsRef.current ||
+      wsRef.current.readyState !== WebSocket.OPEN
+    ) {
+      return;
+    }
+    wsRef.current.send(JSON.stringify({ type: "stop_recognition", payload: {} }));
+    setRecognitionStopped(true);
   };
 
   const stopRecording = async () => {
@@ -1794,20 +1843,73 @@ function App() {
     window.setTimeout(() => setCopied(false), 1600);
   };
 
-  const downloadTranscript = () => {
-    const plainText = buildExportText(timelineSegmentsRef.current, minutesDraft);
-    const activeTitle =
-      history.find((session) => session.id === selectedSessionId)?.title ??
-      (status !== "idle" && status !== "error" ? "live-record" : "transcript");
-    const blob = new Blob([plainText], { type: "text/plain;charset=utf-8" });
-    const url = window.URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `${sanitizeFilename(activeTitle)}.txt`;
-    document.body.append(anchor);
-    anchor.click();
-    anchor.remove();
-    window.URL.revokeObjectURL(url);
+  const downloadTranscriptFile = (
+    title: string,
+    segments: TranscriptSegment[],
+    markdown: string,
+    format: DownloadFormat,
+  ) => {
+    const safeTitle = sanitizeFilename(title);
+    if (format === "md") {
+      downloadTextFile(
+        `${safeTitle}.md`,
+        buildExportMarkdown(title, segments, markdown),
+        "text/markdown;charset=utf-8",
+      );
+      return;
+    }
+    downloadTextFile(
+      `${safeTitle}.txt`,
+      buildExportText(segments, markdown),
+      "text/plain;charset=utf-8",
+    );
+  };
+
+  const downloadTranscripts = async (format: DownloadFormat) => {
+    setDownloadFormatMenuOpen(false);
+    try {
+      const bulkIds = validSidebarSelectedRecordIds;
+      if (bulkIds.length > 0) {
+        for (const sessionId of bulkIds) {
+          const detail =
+            sessionId === selectedSessionId
+              ? null
+              : await apiFetch<SessionDetail>(`/api/sessions/${sessionId}`);
+          const sourceDetail =
+            detail ??
+            ({
+              title:
+                history.find((session) => session.id === sessionId)?.title ??
+                activeTitle,
+              segments: timelineSegmentsRef.current,
+              minutesMarkdown: minutesDraft,
+            } as Pick<SessionDetail, "title" | "segments" | "minutesMarkdown">);
+          downloadTranscriptFile(
+            sourceDetail.title,
+            sortSegments(sourceDetail.segments),
+            sourceDetail.minutesMarkdown ?? "",
+            format,
+          );
+        }
+        return;
+      }
+
+      const currentTitle =
+        selectedHistoryRecord?.title ??
+        (status !== "idle" && status !== "error" ? "live-record" : activeTitle);
+      downloadTranscriptFile(
+        currentTitle,
+        timelineSegmentsRef.current,
+        minutesDraft,
+        format,
+      );
+    } catch (downloadError) {
+      setError(
+        downloadError instanceof Error
+          ? downloadError.message
+          : "ダウンロードに失敗しました。",
+      );
+    }
   };
 
   const updateHistoryFromDetail = (detail: SessionDetail) => {
@@ -2248,16 +2350,41 @@ function App() {
   };
 
   const selectActivePrompt = (promptId: string) => {
-    updatePromptSettings((current) => ({
-      ...current,
+    const baseSettings = draftSettingsRef.current ?? draftSettings;
+    if (!baseSettings) {
+      return;
+    }
+    const promptSettings = normalizePromptSettings({
+      ...normalizePromptSettings(baseSettings.promptSettings),
       activePromptId: promptId,
-    }));
+    });
+    const activePrompt =
+      promptSettings.prompts.find(
+        (prompt) => prompt.id === promptSettings.activePromptId,
+      ) ?? promptSettings.prompts[0];
+    const nextSettings: AppSettings = {
+      ...baseSettings,
+      promptSettings,
+      llm: {
+        ...baseSettings.llm,
+        systemPrompt: activePrompt.content,
+      },
+    };
+    setDraftSettings(nextSettings);
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({
+          type: "update_llm_settings",
+          payload: nextSettings.llm,
+        }),
+      );
+    }
   };
 
   const addPrompt = () => {
     const prompt: PromptPreset = {
       id: createPromptId(),
-      name: "新しいプロンプト",
+      name: "新しい用途テンプレート",
       content: "",
     };
     updatePromptSettings((current) => ({
@@ -2321,12 +2448,12 @@ function App() {
     }
     const promptSettings = normalizePromptSettings(draftSettings.promptSettings);
     if (promptSettings.prompts.length <= 1) {
-      setError("プロンプトは最低1つ必要です。");
+      setError("用途テンプレートは最低1つ必要です。");
       return;
     }
     const targetPrompt = promptSettings.prompts.find((prompt) => prompt.id === promptId);
     const confirmed = window.confirm(
-      `プロンプト「${targetPrompt?.name ?? promptId}」を削除しますか？`,
+      `用途テンプレート「${targetPrompt?.name ?? promptId}」を削除しますか？`,
     );
     if (!confirmed) {
       return;
@@ -2353,7 +2480,7 @@ function App() {
     }
     const promptSettings = normalizePromptSettings(draftSettings.promptSettings);
     downloadTextFile(
-      "voice2text-prompts.json",
+      "voice2text-prompt-templates.json",
       JSON.stringify(promptSettings, null, 2),
     );
   };
@@ -2372,7 +2499,7 @@ function App() {
       setError(
         copyError instanceof Error
           ? copyError.message
-          : "プロンプトのコピーに失敗しました。",
+          : "用途テンプレートのコピーに失敗しました。",
       );
     }
   };
@@ -2386,7 +2513,7 @@ function App() {
     try {
       const importedPrompts = parsePromptImport(await file.text());
       if (importedPrompts.length === 0) {
-        setError("インポートできるプロンプトが見つかりませんでした。");
+        setError("インポートできる用途テンプレートが見つかりませんでした。");
         return;
       }
       const existingIds = new Set(
@@ -2403,7 +2530,7 @@ function App() {
         return {
           ...prompt,
           id,
-          name: normalizePromptName(prompt.name, "Imported Prompt"),
+          name: normalizePromptName(prompt.name, "Imported Template"),
         };
       });
       setEditingPromptId(promptsToAdd[0]?.id ?? null);
@@ -2415,7 +2542,7 @@ function App() {
       setError(
         importError instanceof Error
           ? importError.message
-          : "プロンプトのインポートに失敗しました。",
+          : "用途テンプレートのインポートに失敗しました。",
       );
     }
   };
@@ -2637,6 +2764,7 @@ function App() {
   const validSidebarSelectedRecordIds = sidebarSelectedRecordIds.filter((sessionId) =>
     sidebarHistoryRecordMap.has(sessionId),
   );
+  const downloadAvailable = exportAvailable || validSidebarSelectedRecordIds.length > 0;
   const sidebarSelectedRecordIdSet = new Set(validSidebarSelectedRecordIds);
   const sidebarContextRecord = sidebarContextMenu
     ? sidebarHistoryRecordMap.get(sidebarContextMenu.recordId) ?? null
@@ -3243,7 +3371,7 @@ function App() {
                     id="prompt-editor-title"
                     className="text-xl font-semibold text-slate-900"
                   >
-                    プロンプト設定
+                    用途テンプレート設定
                   </h2>
                 </div>
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
@@ -3277,7 +3405,7 @@ function App() {
                     onClick={() => promptImportInputRef.current?.click()}
                     disabled={!draftSettings}
                     className="inline-flex h-11 w-11 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-500 transition-colors hover:border-slate-300 hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
-                    aria-label="プロンプトをインポート"
+                    aria-label="用途テンプレートをインポート"
                   >
                     <Upload className="size-4" />
                   </button>
@@ -3286,7 +3414,7 @@ function App() {
                     onClick={exportPrompts}
                     disabled={!draftSettings || promptList.length === 0}
                     className="inline-flex h-11 w-11 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-500 transition-colors hover:border-slate-300 hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
-                    aria-label="プロンプトをエクスポート"
+                    aria-label="用途テンプレートをエクスポート"
                   >
                     <Download className="size-4" />
                   </button>
@@ -3303,7 +3431,7 @@ function App() {
                       disabled={!draftSettings}
                     >
                       <FileText className="size-4" />
-                      新規プロンプト
+                      新規テンプレート
                     </Button>
                     <input
                       ref={promptImportInputRef}
@@ -3317,7 +3445,7 @@ function App() {
                   <div className="app-scrollbar min-h-0 flex-1 overflow-y-auto">
                     {promptList.length === 0 ? (
                       <div className="border-b border-slate-200 px-4 py-5 text-sm leading-6 text-slate-500">
-                        プロンプトがまだありません。
+                        用途テンプレートがまだありません。
                       </div>
                     ) : (
                       promptList.map((prompt, index) => {
@@ -3400,7 +3528,7 @@ function App() {
                   {editingPrompt ? (
                     <div className="flex h-full flex-col">
                       <div className="border-b border-slate-200 px-5 py-4">
-                        <p className="field-label">プロンプト名</p>
+                        <p className="field-label">テンプレート名</p>
                         {promptNameEditState?.promptId === editingPrompt.id ? (
                           <div className="mt-2 flex min-w-0 items-center gap-2">
                             <input
@@ -3423,13 +3551,13 @@ function App() {
                                 }
                               }}
                               className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-lg font-bold text-slate-900 outline-none focus:border-[#007aff] focus:ring-4 focus:ring-[#007aff]/10"
-                              placeholder="プロンプト名"
+                              placeholder="テンプレート名"
                             />
                             <button
                               type="button"
                               onClick={savePromptNameEdit}
                               className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition-colors hover:border-slate-300 hover:text-slate-700"
-                              aria-label="プロンプト名を保存"
+                              aria-label="テンプレート名を保存"
                             >
                               <Check className="size-4" />
                             </button>
@@ -3437,7 +3565,7 @@ function App() {
                               type="button"
                               onClick={cancelPromptNameEdit}
                               className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition-colors hover:border-slate-300 hover:text-slate-700"
-                              aria-label="プロンプト名の編集をキャンセル"
+                              aria-label="テンプレート名の編集をキャンセル"
                             >
                               <X className="size-4" />
                             </button>
@@ -3451,7 +3579,7 @@ function App() {
                               type="button"
                               onClick={() => beginPromptNameEdit(editingPrompt)}
                               className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
-                              aria-label="プロンプト名を編集"
+                              aria-label="テンプレート名を編集"
                             >
                               <Pencil className="size-4" />
                             </button>
@@ -3470,8 +3598,8 @@ function App() {
                               onClick={() => void copyAllPrompts()}
                               disabled={!draftSettings || promptList.length === 0}
                               className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
-                              aria-label="全プロンプトをコピー"
-                              title={promptCopied ? "コピーしました" : "全プロンプトをコピー"}
+                              aria-label="全用途テンプレートをコピー"
+                              title={promptCopied ? "コピーしました" : "全用途テンプレートをコピー"}
                             >
                               <Copy className="size-4" />
                             </button>
@@ -3484,7 +3612,7 @@ function App() {
                               })
                             }
                             className="app-scrollbar min-h-0 flex-1 resize-none border-0 bg-white p-5 text-sm leading-7 text-slate-800 outline-none"
-                            placeholder="ここに文字起こし整形用のプロンプトを書いてください。"
+                            placeholder="ここに用途別の整形テンプレートを書いてください。"
                           />
                         </section>
 
@@ -3513,7 +3641,7 @@ function App() {
                     </div>
                   ) : (
                     <div className="flex h-full items-center justify-center p-8 text-sm text-slate-500">
-                      左側からプロンプトを選択してください。
+                      左側から用途テンプレートを選択してください。
                     </div>
                   )}
                 </main>
@@ -3597,6 +3725,26 @@ function App() {
           </div>
 
           <div className="flex items-center gap-2">
+            {promptList.length > 0 ? (
+              <label className="hidden items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 sm:flex">
+                <span className="whitespace-nowrap text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">
+                  使用プロンプト
+                </span>
+                <select
+                  value={activePromptId}
+                  onChange={(event) => selectActivePrompt(event.target.value)}
+                  disabled={!draftSettings || promptList.length === 0}
+                  className="max-w-[14rem] bg-transparent text-sm font-semibold text-slate-700 outline-none disabled:cursor-not-allowed disabled:opacity-40"
+                  aria-label="使用プロンプトを選択"
+                >
+                  {promptList.map((prompt) => (
+                    <option key={prompt.id} value={prompt.id}>
+                      {prompt.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
             {selectedSessionId ? (
               <div className="inline-flex rounded-xl border border-slate-200 bg-white p-1">
                 <button
@@ -3634,15 +3782,39 @@ function App() {
             >
               {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
             </button>
-            <button
-              type="button"
-              onClick={() => void downloadTranscript()}
-              disabled={!exportAvailable}
-              className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-500 transition-colors hover:border-slate-300 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
-              aria-label="Download transcript"
-            >
-              <Download className="size-4" />
-            </button>
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() =>
+                  setDownloadFormatMenuOpen((current) =>
+                    downloadAvailable ? !current : false,
+                  )
+                }
+                disabled={!downloadAvailable}
+                className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-500 transition-colors hover:border-slate-300 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
+                aria-label="Download transcript"
+              >
+                <Download className="size-4" />
+              </button>
+              {downloadFormatMenuOpen ? (
+                <div className="absolute right-0 top-12 z-40 w-36 overflow-hidden rounded-xl border border-slate-200 bg-white py-1 shadow-[0_18px_40px_rgba(15,23,42,0.14)]">
+                  <button
+                    type="button"
+                    onClick={() => void downloadTranscripts("txt")}
+                    className="block w-full px-3 py-2 text-left text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50"
+                  >
+                    text形式
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void downloadTranscripts("md")}
+                    className="block w-full px-3 py-2 text-left text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50"
+                  >
+                    md形式
+                  </button>
+                </div>
+              ) : null}
+            </div>
             <button
               type="button"
               onClick={() => {
@@ -4073,6 +4245,25 @@ function App() {
                 <p className="mt-0.5 text-[10px] text-slate-400">Drag to boost</p>
               </div>
             </div>
+
+            {hasActiveCapture ? (
+              recognitionStopped ? (
+                <div className="inline-flex h-10 items-center rounded-lg border border-amber-200 bg-amber-50 px-3 text-xs font-semibold text-amber-700">
+                  録音のみ継続中
+                </div>
+              ) : (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100"
+                  onClick={stopRecognitionOnly}
+                  disabled={status !== "recording"}
+                >
+                  <MicOff className="size-4" />
+                  文字認識中止
+                </Button>
+              )
+            ) : null}
 
             <div className="min-w-[200px] flex-1 max-w-[320px]">
               <WaveformCanvas
@@ -4545,7 +4736,7 @@ function App() {
                           </Button>
                         </div>
                         <p className="text-xs leading-5 text-slate-500">
-                          プロンプト編集画面と同期しています。選択したプロンプトがリアルタイム整形と一括整形に使われます。
+                          選択した用途テンプレートがリアルタイム整形と一括整形に使われます。
                         </p>
                       </div>
 

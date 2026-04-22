@@ -5,6 +5,12 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.prompt_defaults import (
+    DEFAULT_PROMPT_CONTENT,
+    DEFAULT_PROMPT_ID,
+    DEFAULT_PROMPT_NAME,
+)
+
 
 class ProviderConfig(BaseModel):
     api_key: str = Field(default="", alias="apiKey")
@@ -41,18 +47,6 @@ class LlmSettings(BaseModel):
     system_prompt: str = Field(default="", alias="systemPrompt")
 
     model_config = ConfigDict(populate_by_name=True)
-
-
-DEFAULT_PROMPT_ID = "default-cleanup"
-DEFAULT_PROMPT_NAME = "標準整形"
-DEFAULT_PROMPT_CONTENT = (
-    "You are an editor for Japanese speech recognition output. "
-    "Rewrite the lines marked TARGET into one natural Japanese paragraph. "
-    "Use PREVIOUS lines only as context. Add punctuation and normalize kanji/kana. "
-    "Do not repeat PREVIOUS content. Output only information newly present in TARGET. "
-    "If TARGET overlaps with PREVIOUS, omit the duplicated part. "
-    "Do not add facts that are not present. Return only the refined paragraph."
-)
 
 
 class PromptPreset(BaseModel):

@@ -307,6 +307,8 @@ async def transcription_socket(websocket: WebSocket):
                 session.pause()
             elif envelope.type == "resume_session":
                 session.resume()
+            elif envelope.type == "stop_recognition":
+                session.stop_recognition()
             elif envelope.type == "stop_session":
                 session.finalize()
             else:

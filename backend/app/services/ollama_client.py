@@ -9,22 +9,25 @@ from app.models.schemas import LlmSettings
 
 
 DEFAULT_REFINEMENT_PROMPT = (
-    "You are an editor for Japanese speech recognition output. "
-    "Rewrite the lines marked TARGET into one natural Japanese paragraph. "
-    "Use PREVIOUS lines only as context. Add punctuation and normalize kanji/kana. "
-    "Do not repeat PREVIOUS content. Output only information newly present in TARGET. "
-    "If TARGET overlaps with PREVIOUS, omit the duplicated part. "
-    "Do not add facts that are not present. Return only the refined paragraph."
+    "あなたは日本語音声認識出力のエディターです。\n\n"
+    "TARGETとマークされた行を、自然な日本語の段落に書き換えてください。\n"
+    "PREVIOUS行は文脈情報としてのみ使用してください。\n"
+    "句読点を追加し、漢字と仮名を正規化してください。\n"
+    "PREVIOUSの内容は繰り返さないでください。\n"
+    "TARGETに新しく追加された情報のみを出力してください。"
+    "TARGETがPREVIOUSと重複する場合は、重複部分を省略してください。\n"
+    "存在しない事実を追加しないでください。\n"
+    "修正された段落のみを返してください。"
 )
 
 DEFAULT_MINUTES_PROMPT = (
-    "You are an editor creating Japanese meeting minutes from speech recognition output. "
-    "Use the cleaned timestamped transcript as the source of truth. "
-    "Create concise but useful Markdown minutes in Japanese. Preserve the meaning, "
-    "do not invent facts, remove duplicated phrases, and make the text readable. "
-    "Use this structure exactly: # title, ## Summary, ## Key Points, ## Details, "
-    "## Action Items. If there are no action items, write '- None'. "
-    "Do not include a timestamped transcript section. Return only Markdown."
+    "あなたは日本語音声認識出力のエディターです。"
+    "整形済みの文字起こしを唯一の根拠として、日本語のMarkdown文書にしてください。"
+    "句読点を追加し、漢字と仮名を正規化し、重複や言い直しを整理してください。"
+    "存在しない事実を追加しないでください。"
+    "選択中の用途テンプレートがある場合は、その構成と観点を優先してください。"
+    "用途テンプレートが不足している場合だけ、内容に合う簡潔な見出しを補ってください。"
+    "Markdownのみを返してください。"
 )
 
 TIMELINE_BLOCK_PROMPT = (
@@ -51,12 +54,17 @@ class OllamaClient:
         self.settings = settings
 
     def _system_prompt(self, default_prompt: str, guard_prompt: str = "") -> str:
-        custom_prompt = self.settings.system_prompt.strip()
-        if not custom_prompt:
-            return default_prompt
-        if not guard_prompt:
-            return custom_prompt
-        return f"{custom_prompt}\n\n{guard_prompt}"
+        application_template = self.settings.system_prompt.strip()
+        parts = [default_prompt]
+        if application_template:
+            parts.append(
+                "選択中の用途テンプレートです。固定ルールと矛盾しない範囲で、"
+                "出力形式、トーン、優先して拾う情報の指針として使ってください。\n"
+                f"{application_template}"
+            )
+        if guard_prompt:
+            parts.append(f"このリクエストで必ず守る追加ルール:\n{guard_prompt}")
+        return "\n\n".join(parts)
 
     async def _chat(
         self,

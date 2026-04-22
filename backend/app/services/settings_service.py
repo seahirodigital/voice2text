@@ -7,8 +7,9 @@ import shutil
 from moonshine_voice import ModelArch, supported_languages
 from moonshine_voice.download import find_model_info
 
-from app.config import load_settings, resolve_paths, save_settings
+from app.config import REPO_ROOT, load_settings, resolve_paths, save_settings
 from app.models.schemas import AppSettings, LlmSettings, MetaResponse, SettingsResponse
+from app.services.prompt_template_service import PromptTemplateService
 
 
 MODEL_PRESET_CANDIDATES: dict[str, list[ModelArch]] = {
@@ -42,18 +43,28 @@ def available_model_presets(language: str) -> list[str]:
 
 
 class SettingsService:
+    def __init__(self) -> None:
+        self.prompt_templates = PromptTemplateService(REPO_ROOT / "prompt")
+
+    def _with_file_prompt_settings(self, settings: AppSettings) -> AppSettings:
+        prompt_settings = self.prompt_templates.load_prompt_settings(
+            settings.prompt_settings.active_prompt_id,
+            [prompt.id for prompt in settings.prompt_settings.prompts],
+        )
+        return settings.model_copy(update={"prompt_settings": prompt_settings})
+
     def get_settings_response(self) -> SettingsResponse:
-        settings = load_settings()
+        settings = self.get_settings()
         return SettingsResponse(
             settings=settings,
             resolvedPaths=resolve_paths(settings),
         )
 
     def get_settings(self) -> AppSettings:
-        return load_settings()
+        return self._with_file_prompt_settings(load_settings())
 
     def get_runtime_llm_settings(self, settings: AppSettings | None = None) -> LlmSettings:
-        resolved_settings = settings or load_settings()
+        resolved_settings = self._with_file_prompt_settings(settings or load_settings())
         active_prompt = next(
             (
                 prompt
@@ -67,13 +78,17 @@ class SettingsService:
         )
 
     def update_settings(self, settings: AppSettings) -> SettingsResponse:
-        current_settings = load_settings()
+        current_settings = self.get_settings()
         current_paths = resolve_paths(current_settings)
         next_paths = resolve_paths(settings)
         self._migrate_recordings_root(
             Path(current_paths.temp_recordings_root),
             Path(next_paths.temp_recordings_root),
         )
+        prompt_settings = self.prompt_templates.save_prompt_settings(
+            settings.prompt_settings
+        )
+        settings = settings.model_copy(update={"prompt_settings": prompt_settings})
         save_settings(settings)
         return self.get_settings_response()
 
