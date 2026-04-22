@@ -34,6 +34,11 @@ TIMELINE_BLOCK_PROMPT = (
     "Use PREVIOUS only as context and do not repeat it. Return only cleaned timestamped lines."
 )
 
+TIMELINE_BLOCK_GUARD_PROMPT = (
+    "For this request, preserve every TARGET timestamp and return only cleaned "
+    "timestamped transcript lines. Do not summarize or add facts."
+)
+
 
 @dataclass(slots=True)
 class RefinementResult:
@@ -44,6 +49,14 @@ class RefinementResult:
 class OllamaClient:
     def __init__(self, settings: LlmSettings) -> None:
         self.settings = settings
+
+    def _system_prompt(self, default_prompt: str, guard_prompt: str = "") -> str:
+        custom_prompt = self.settings.system_prompt.strip()
+        if not custom_prompt:
+            return default_prompt
+        if not guard_prompt:
+            return custom_prompt
+        return f"{custom_prompt}\n\n{guard_prompt}"
 
     async def _chat(
         self,
@@ -85,7 +98,7 @@ class OllamaClient:
 
     async def refine(self, context: str) -> RefinementResult:
         return await self._chat(
-            system_prompt=DEFAULT_REFINEMENT_PROMPT,
+            system_prompt=self._system_prompt(DEFAULT_REFINEMENT_PROMPT),
             user_prompt=context,
             num_predict=160,
             timeout_seconds=120.0,
@@ -93,7 +106,7 @@ class OllamaClient:
 
     async def refine_minutes(self, *, title: str, transcript: str) -> RefinementResult:
         return await self._chat(
-            system_prompt=DEFAULT_MINUTES_PROMPT,
+            system_prompt=self._system_prompt(DEFAULT_MINUTES_PROMPT),
             user_prompt=f"# {title}\n\nTranscript:\n{transcript}",
             num_predict=2048,
             timeout_seconds=300.0,
@@ -106,7 +119,10 @@ class OllamaClient:
         target: str,
     ) -> RefinementResult:
         return await self._chat(
-            system_prompt=TIMELINE_BLOCK_PROMPT,
+            system_prompt=self._system_prompt(
+                TIMELINE_BLOCK_PROMPT,
+                TIMELINE_BLOCK_GUARD_PROMPT,
+            ),
             user_prompt=f"PREVIOUS:\n{previous}\n\nTARGET:\n{target}",
             num_predict=512,
             timeout_seconds=180.0,

@@ -176,7 +176,7 @@ async def create_session_minutes(session_id: str):
             faster_whisper_models_root=Path(paths.faster_whisper_models_root),
             session_id=session_id,
             transcription_settings=settings.transcription,
-            llm_settings=settings.llm,
+            llm_settings=settings_service.get_runtime_llm_settings(settings),
             progress_callback=lambda progress: store.update_minutes_progress(
                 session_id,
                 progress=progress,
@@ -270,7 +270,7 @@ async def transcription_socket(websocket: WebSocket):
         models_root=Path(paths.models_root),
         update_interval_ms=settings.transcription.update_interval_ms,
         enable_word_timestamps=settings.transcription.enable_word_timestamps,
-        llm_settings=settings.llm,
+        llm_settings=settings_service.get_runtime_llm_settings(settings),
     )
 
     async def sender() -> None:

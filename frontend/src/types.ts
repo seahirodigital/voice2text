@@ -17,6 +17,12 @@ export interface ProviderConfig {
   model: string;
 }
 
+export interface PromptPreset {
+  id: string;
+  name: string;
+  content: string;
+}
+
 export interface AppSettings {
   paths: {
     modelsRoot: string;
@@ -53,6 +59,11 @@ export interface AppSettings {
     debounceMs: number;
     maxWaitMs: number;
     completeOnly: boolean;
+    systemPrompt: string;
+  };
+  promptSettings: {
+    activePromptId: string;
+    prompts: PromptPreset[];
   };
 }
 

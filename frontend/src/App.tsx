@@ -7,6 +7,7 @@ import {
   Copy,
   Download,
   FileText,
+  Filter,
   FolderOpen,
   LoaderCircle,
   Mic,
@@ -18,9 +19,8 @@ import {
   Search,
   Square,
   Settings2,
-  Share2,
-  SlidersHorizontal,
   Trash2,
+  Upload,
   X,
 } from "lucide-react";
 import {
@@ -32,6 +32,7 @@ import {
   useState,
 } from "react";
 import type {
+  ChangeEvent as ReactChangeEvent,
   KeyboardEvent as ReactKeyboardEvent,
   MouseEvent,
   PointerEvent as ReactPointerEvent,
@@ -43,6 +44,7 @@ import { transcriptToPlainText } from "./lib/utils";
 import type {
   AppSettings,
   MetaResponse,
+  PromptPreset,
   RecordingStatus,
   SessionDetail,
   SessionSummary,
@@ -69,6 +71,10 @@ const SETTINGS_AUTOSAVE_DELAY_MS = 450;
 const TRANSCRIPT_COLUMN_GAP_PX = 16;
 const LLM_MODEL_OPTIONS = ["gemma4:e2b", "gemma4:e4b"];
 const DEVICE_ID_STORAGE_KEY = "voice2text.device-id";
+const DEFAULT_PROMPT_ID = "default-cleanup";
+const DEFAULT_PROMPT_NAME = "標準整形";
+const DEFAULT_PROMPT_CONTENT =
+  "You are an editor for Japanese speech recognition output. Rewrite the lines marked TARGET into one natural Japanese paragraph. Use PREVIOUS lines only as context. Add punctuation and normalize kanji/kana. Do not repeat PREVIOUS content. Output only information newly present in TARGET. If TARGET overlaps with PREVIOUS, omit the duplicated part. Do not add facts that are not present. Return only the refined paragraph.";
 
 const LANGUAGE_LABELS: Record<string, string> = {
   ja: "Japanese",
@@ -216,6 +222,12 @@ interface SidebarContextMenuState {
   recordId: string;
   x: number;
   y: number;
+}
+
+interface SpeakerRenameState {
+  speakerIndex: number;
+  currentLabel: string;
+  draft: string;
 }
 
 function SettingsHelpContent({ topic }: { topic: SettingsHelpTopic }) {
@@ -508,6 +520,113 @@ function normalizeSpeakerName(value: string, fallback: string) {
   return normalized || fallback;
 }
 
+function createDefaultPrompt(): PromptPreset {
+  return {
+    id: DEFAULT_PROMPT_ID,
+    name: DEFAULT_PROMPT_NAME,
+    content: DEFAULT_PROMPT_CONTENT,
+  };
+}
+
+function normalizePromptName(value: string, fallback = "Untitled Prompt") {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized || fallback;
+}
+
+function createPromptId() {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return `prompt-${crypto.randomUUID()}`;
+  }
+  return `prompt-${Date.now().toString(36)}-${Math.random()
+    .toString(36)
+    .slice(2, 8)}`;
+}
+
+function normalizePromptSettings(
+  promptSettings?: AppSettings["promptSettings"] | null,
+): AppSettings["promptSettings"] {
+  const sourcePrompts = promptSettings?.prompts?.length
+    ? promptSettings.prompts
+    : [createDefaultPrompt()];
+  const seenIds = new Set<string>();
+  const prompts = sourcePrompts.map((prompt) => {
+    let id = String(prompt.id || "").trim() || createPromptId();
+    while (seenIds.has(id)) {
+      id = createPromptId();
+    }
+    seenIds.add(id);
+    return {
+      id,
+      name: normalizePromptName(prompt.name, DEFAULT_PROMPT_NAME),
+      content: String(prompt.content ?? ""),
+    };
+  });
+  const activePromptId = prompts.some(
+    (prompt) => prompt.id === promptSettings?.activePromptId,
+  )
+    ? promptSettings?.activePromptId ?? prompts[0].id
+    : prompts[0].id;
+  return { activePromptId, prompts };
+}
+
+function settingsWithRuntimePrompt(settings: AppSettings): AppSettings {
+  const promptSettings = normalizePromptSettings(settings.promptSettings);
+  const activePrompt =
+    promptSettings.prompts.find(
+      (prompt) => prompt.id === promptSettings.activePromptId,
+    ) ?? promptSettings.prompts[0];
+  return {
+    ...settings,
+    promptSettings,
+    llm: {
+      ...settings.llm,
+      systemPrompt: activePrompt.content,
+    },
+  };
+}
+
+function downloadTextFile(filename: string, text: string, type = "application/json") {
+  const blob = new Blob([text], { type });
+  const url = window.URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  window.URL.revokeObjectURL(url);
+}
+
+function parsePromptImport(raw: string): PromptPreset[] {
+  const parsed = JSON.parse(raw) as unknown;
+  const promptCandidates =
+    Array.isArray(parsed)
+      ? parsed
+      : parsed &&
+          typeof parsed === "object" &&
+          "prompts" in parsed &&
+          Array.isArray((parsed as { prompts: unknown }).prompts)
+        ? (parsed as { prompts: unknown[] }).prompts
+        : [];
+
+  return promptCandidates
+    .map((candidate) => {
+      if (!candidate || typeof candidate !== "object") {
+        return null;
+      }
+      const prompt = candidate as Partial<PromptPreset>;
+      const name = normalizePromptName(String(prompt.name ?? ""), "");
+      const content = String(prompt.content ?? "");
+      if (!name && !content.trim()) {
+        return null;
+      }
+      return {
+        id: String(prompt.id ?? "").trim() || createPromptId(),
+        name: name || "Imported Prompt",
+        content,
+      };
+    })
+    .filter((prompt): prompt is PromptPreset => Boolean(prompt));
+}
+
 function normalizeBatchSettings(
   settings: AppSettings,
   fasterWhisperModels: string[] = FALLBACK_FASTER_WHISPER_MODELS,
@@ -755,6 +874,13 @@ function App() {
     "newest",
   );
   const [recordsOpen, setRecordsOpen] = useState(false);
+  const [promptEditorOpen, setPromptEditorOpen] = useState(false);
+  const [editingPromptId, setEditingPromptId] = useState<string | null>(null);
+  const [promptNameEditState, setPromptNameEditState] = useState<{
+    promptId: string;
+    draft: string;
+  } | null>(null);
+  const [promptCopied, setPromptCopied] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsHelpTopic, setSettingsHelpTopic] =
     useState<SettingsHelpTopic | null>(null);
@@ -767,6 +893,9 @@ function App() {
   >(null);
   const [isAudioPlaying, setIsAudioPlaying] = useState(false);
   const [speakerEditMode, setSpeakerEditMode] = useState(false);
+  const [speakerRenameState, setSpeakerRenameState] = useState<SpeakerRenameState | null>(
+    null,
+  );
   const [liveSessionStartedAt, setLiveSessionStartedAt] = useState<string | null>(
     null,
   );
@@ -794,6 +923,8 @@ function App() {
   const transcriptScrollRef = useRef<HTMLDivElement | null>(null);
   const recordsPanelRef = useRef<HTMLElement | null>(null);
   const minutesSplitRef = useRef<HTMLDivElement | null>(null);
+  const promptImportInputRef = useRef<HTMLInputElement | null>(null);
+  const speakerRenameInputRef = useRef<HTMLInputElement | null>(null);
   const segmentRowRefs = useRef<Map<string, HTMLElement>>(new Map());
   const lastLiveSegmentIdRef = useRef<string | null>(null);
   const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
@@ -803,6 +934,7 @@ function App() {
   const statusRef = useRef<RecordingStatus>("idle");
   const isLiveSessionRef = useRef(false);
   const pendingLiveTitleRef = useRef<string | null>(null);
+  const draftSettingsRef = useRef<AppSettings | null>(null);
   const settingsAutoSaveTimeoutRef = useRef<number | null>(null);
   const lastSavedSettingsSnapshotRef = useRef<string | null>(null);
   const transcriptColumnResizeRef = useRef<{
@@ -840,6 +972,10 @@ function App() {
   }, [status]);
 
   useEffect(() => {
+    draftSettingsRef.current = draftSettings;
+  }, [draftSettings]);
+
+  useEffect(() => {
     inputGainDbRef.current = inputGainDb;
     const audioContext = audioContextRef.current;
     const inputGain = inputGainNodeRef.current;
@@ -867,9 +1003,15 @@ function App() {
     }
 
     const handle = window.setInterval(() => {
-      void refreshHistory().catch(() => {
-        // Keep the current UI state if polling fails mid-process.
-      });
+      void apiFetch<SessionSummary[]>("/api/sessions")
+        .then((sessions) => {
+          startTransition(() => {
+            setHistory(sessions);
+          });
+        })
+        .catch(() => {
+          // Keep the current UI state if polling fails mid-process.
+        });
     }, 900);
 
     return () => {
@@ -905,10 +1047,12 @@ function App() {
           ? effectiveMeta.availableModelsByLanguage[effectiveMeta.defaultLanguage]
           : undefined) ??
         ["tiny"];
-      return normalizeBatchSettings(
-        settings,
-        fasterWhisperModels,
-        moonshineModels,
+      return settingsWithRuntimePrompt(
+        normalizeBatchSettings(
+          settings,
+          fasterWhisperModels,
+          moonshineModels,
+        ),
       );
     },
     [meta],
@@ -1423,7 +1567,7 @@ function App() {
               channels: 1,
               deviceLabel: selectedDevice?.label || "Default Microphone",
               maxSpeakers: draftSettings.transcription.maxSpeakers,
-              llm: draftSettings.llm,
+              llm: settingsWithRuntimePrompt(draftSettings).llm,
             },
           }),
         );
@@ -1519,7 +1663,15 @@ function App() {
       const settingsToSave = normalizeSettingsForPersistence(rawSettings);
       const nextSnapshot = JSON.stringify(settingsToSave);
       if (nextSnapshot === lastSavedSettingsSnapshotRef.current) {
-        setDraftSettings(settingsToSave);
+        setDraftSettings((current) => {
+          if (!current) {
+            return settingsToSave;
+          }
+          return JSON.stringify(normalizeSettingsForPersistence(current)) ===
+            nextSnapshot
+            ? settingsToSave
+            : current;
+        });
         if (options?.closePanelOnSuccess) {
           setSettingsOpen(false);
         }
@@ -1531,7 +1683,15 @@ function App() {
         settingsAutoSaveTimeoutRef.current = null;
       }
 
-      setDraftSettings(settingsToSave);
+      setDraftSettings((current) => {
+        if (!current) {
+          return settingsToSave;
+        }
+        return JSON.stringify(normalizeSettingsForPersistence(current)) ===
+          nextSnapshot
+          ? settingsToSave
+          : current;
+      });
       setSavingSettings(true);
       try {
         const response = await apiFetch<SettingsResponse>("/api/settings", {
@@ -1550,10 +1710,16 @@ function App() {
           ...response,
           settings: normalizedResponseSettings,
         });
-        setDraftSettings(normalizedResponseSettings);
-        setUpdateIntervalDraft(
-          String(normalizedResponseSettings.transcription.updateIntervalMs),
-        );
+        const latestDraft = draftSettingsRef.current;
+        const latestSnapshot = latestDraft
+          ? JSON.stringify(normalizeSettingsForPersistence(latestDraft, nextMeta))
+          : nextSnapshot;
+        if (latestSnapshot === nextSnapshot) {
+          setDraftSettings(normalizedResponseSettings);
+          setUpdateIntervalDraft(
+            String(normalizedResponseSettings.transcription.updateIntervalMs),
+          );
+        }
         setMeta(nextMeta);
         if (wsRef.current?.readyState === WebSocket.OPEN) {
           wsRef.current.send(
@@ -1642,30 +1808,6 @@ function App() {
     anchor.click();
     anchor.remove();
     window.URL.revokeObjectURL(url);
-  };
-
-  const shareTranscript = async () => {
-    const plainText =
-      activeTranscriptView === "minutes"
-        ? minutesDraft
-        : transcriptToPlainText(timelineSegmentsRef.current);
-    const selectedTitle =
-      history.find((session) => session.id === selectedSessionId)?.title ??
-      "Voice2Text Transcript";
-    if (navigator.share) {
-      try {
-        await navigator.share({
-          title: selectedTitle,
-          text: plainText,
-        });
-        return;
-      } catch (shareError) {
-        if (shareError instanceof Error && shareError.name === "AbortError") {
-          return;
-        }
-      }
-    }
-    await copyTranscript();
   };
 
   const updateHistoryFromDetail = (detail: SessionDetail) => {
@@ -1851,34 +1993,77 @@ function App() {
     setEditVersion((version) => version + 1);
   };
 
-  const renameSpeaker = (speakerIndex: number, currentLabel: string) => {
-    const requestedName = window.prompt(
-      "Rename this speaker across the transcript",
+  const applySpeakerRename = useCallback(
+    (speakerIndex: number, currentLabel: string, requestedName: string) => {
+      const nextLabel = normalizeSpeakerName(requestedName, currentLabel);
+      speakerNameOverridesRef.current.set(speakerIndex, nextLabel);
+      const affectedSegmentIds = timelineSegmentsRef.current
+        .filter((segment) => segment.speakerIndex === speakerIndex)
+        .map((segment) => segment.id);
+      if (statusRef.current === "idle" && selectedSessionId) {
+        affectedSegmentIds.forEach((segmentId) => {
+          dirtySegmentIdsRef.current.add(segmentId);
+        });
+      }
+      setTimelineSegments((current) =>
+        current.map((segment) =>
+          segment.speakerIndex === speakerIndex
+            ? { ...segment, speakerLabel: nextLabel, updatedAt: new Date().toISOString() }
+            : segment,
+        ),
+      );
+      setEditVersion((version) => version + 1);
+    },
+    [selectedSessionId],
+  );
+
+  const openSpeakerRenameModal = useCallback((speakerIndex: number, currentLabel: string) => {
+    setSpeakerRenameState({
+      speakerIndex,
       currentLabel,
-    );
-    if (requestedName === null) {
+      draft: currentLabel,
+    });
+  }, []);
+
+  const closeSpeakerRenameModal = useCallback(() => {
+    setSpeakerRenameState(null);
+  }, []);
+
+  const submitSpeakerRename = useCallback(() => {
+    if (!speakerRenameState) {
       return;
     }
 
-    const nextLabel = normalizeSpeakerName(requestedName, currentLabel);
-    speakerNameOverridesRef.current.set(speakerIndex, nextLabel);
-    const affectedSegmentIds = timelineSegmentsRef.current
-      .filter((segment) => segment.speakerIndex === speakerIndex)
-      .map((segment) => segment.id);
-    if (statusRef.current === "idle" && selectedSessionId) {
-      affectedSegmentIds.forEach((segmentId) => {
-        dirtySegmentIdsRef.current.add(segmentId);
-      });
-    }
-    setTimelineSegments((current) =>
-      current.map((segment) =>
-        segment.speakerIndex === speakerIndex
-          ? { ...segment, speakerLabel: nextLabel, updatedAt: new Date().toISOString() }
-          : segment,
-      ),
+    applySpeakerRename(
+      speakerRenameState.speakerIndex,
+      speakerRenameState.currentLabel,
+      speakerRenameState.draft,
     );
-    setEditVersion((version) => version + 1);
-  };
+    setSpeakerRenameState(null);
+  }, [applySpeakerRename, speakerRenameState]);
+
+  useEffect(() => {
+    if (!speakerRenameState) {
+      return;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      speakerRenameInputRef.current?.focus();
+      speakerRenameInputRef.current?.select();
+    });
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setSpeakerRenameState(null);
+      }
+    };
+
+    window.addEventListener("keydown", handleEscape);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("keydown", handleEscape);
+    };
+  }, [speakerRenameState]);
 
   const findPlaybackSegmentId = useCallback((currentTime: number) => {
     const segments = timelineSegmentsRef.current;
@@ -1976,8 +2161,13 @@ function App() {
   }, [findPlaybackSegmentId, currentAudioUrl]);
 
   useEffect(() => {
-    setIsAudioPlaying(false);
-    setPlaybackActiveSegmentId(null);
+    const frame = window.requestAnimationFrame(() => {
+      setIsAudioPlaying(false);
+      setPlaybackActiveSegmentId(null);
+    });
+    return () => {
+      window.cancelAnimationFrame(frame);
+    };
   }, [currentAudioUrl, selectedSessionId]);
 
   const openRecordingInExplorer = async (sessionId: string) => {
@@ -2017,6 +2207,219 @@ function App() {
     setDraftSettings((current) => (current ? updater(current) : current));
   };
 
+  const updatePromptSettings = (
+    updater: (
+      current: AppSettings["promptSettings"],
+    ) => AppSettings["promptSettings"],
+  ) => {
+    updateDraftSettings((current) => {
+      const promptSettings = normalizePromptSettings(
+        updater(normalizePromptSettings(current.promptSettings)),
+      );
+      const activePrompt =
+        promptSettings.prompts.find(
+          (prompt) => prompt.id === promptSettings.activePromptId,
+        ) ?? promptSettings.prompts[0];
+      return {
+        ...current,
+        promptSettings,
+        llm: {
+          ...current.llm,
+          systemPrompt: activePrompt.content,
+        },
+      };
+    });
+  };
+
+  const openPromptEditor = () => {
+    const promptSettings = draftSettings
+      ? normalizePromptSettings(draftSettings.promptSettings)
+      : null;
+    setEditingPromptId((current) => current ?? promptSettings?.activePromptId ?? null);
+    setPromptEditorOpen(true);
+  };
+
+  const togglePromptEditor = () => {
+    if (promptEditorOpen) {
+      closePromptEditor();
+      return;
+    }
+    openPromptEditor();
+  };
+
+  const selectActivePrompt = (promptId: string) => {
+    updatePromptSettings((current) => ({
+      ...current,
+      activePromptId: promptId,
+    }));
+  };
+
+  const addPrompt = () => {
+    const prompt: PromptPreset = {
+      id: createPromptId(),
+      name: "新しいプロンプト",
+      content: "",
+    };
+    updatePromptSettings((current) => ({
+      ...current,
+      prompts: [...current.prompts, prompt],
+    }));
+    setEditingPromptId(prompt.id);
+  };
+
+  const updatePrompt = (promptId: string, patch: Partial<PromptPreset>) => {
+    updatePromptSettings((current) => ({
+      ...current,
+      prompts: current.prompts.map((prompt) =>
+        prompt.id === promptId ? { ...prompt, ...patch } : prompt,
+      ),
+    }));
+  };
+
+  const beginPromptNameEdit = (prompt: PromptPreset) => {
+    setPromptNameEditState({
+      promptId: prompt.id,
+      draft: prompt.name,
+    });
+  };
+
+  const cancelPromptNameEdit = () => {
+    setPromptNameEditState(null);
+  };
+
+  const savePromptNameEdit = () => {
+    if (!promptNameEditState) {
+      return;
+    }
+    updatePrompt(promptNameEditState.promptId, {
+      name: normalizePromptName(promptNameEditState.draft, DEFAULT_PROMPT_NAME),
+    });
+    setPromptNameEditState(null);
+  };
+
+  const movePrompt = (promptId: string, direction: -1 | 1) => {
+    updatePromptSettings((current) => {
+      const promptIndex = current.prompts.findIndex((prompt) => prompt.id === promptId);
+      const nextIndex = promptIndex + direction;
+      if (
+        promptIndex === -1 ||
+        nextIndex < 0 ||
+        nextIndex >= current.prompts.length
+      ) {
+        return current;
+      }
+      const prompts = [...current.prompts];
+      const [prompt] = prompts.splice(promptIndex, 1);
+      prompts.splice(nextIndex, 0, prompt);
+      return { ...current, prompts };
+    });
+  };
+
+  const deletePrompt = (promptId: string) => {
+    if (!draftSettings) {
+      return;
+    }
+    const promptSettings = normalizePromptSettings(draftSettings.promptSettings);
+    if (promptSettings.prompts.length <= 1) {
+      setError("プロンプトは最低1つ必要です。");
+      return;
+    }
+    const targetPrompt = promptSettings.prompts.find((prompt) => prompt.id === promptId);
+    const confirmed = window.confirm(
+      `プロンプト「${targetPrompt?.name ?? promptId}」を削除しますか？`,
+    );
+    if (!confirmed) {
+      return;
+    }
+    const nextEditingPromptId =
+      promptSettings.prompts.find((prompt) => prompt.id !== promptId)?.id ??
+      DEFAULT_PROMPT_ID;
+    updatePromptSettings((current) => {
+      const prompts = current.prompts.filter((prompt) => prompt.id !== promptId);
+      return {
+        activePromptId:
+          current.activePromptId === promptId
+            ? prompts[0]?.id ?? DEFAULT_PROMPT_ID
+            : current.activePromptId,
+        prompts,
+      };
+    });
+    setEditingPromptId((current) => (current === promptId ? nextEditingPromptId : current));
+  };
+
+  const exportPrompts = () => {
+    if (!draftSettings) {
+      return;
+    }
+    const promptSettings = normalizePromptSettings(draftSettings.promptSettings);
+    downloadTextFile(
+      "voice2text-prompts.json",
+      JSON.stringify(promptSettings, null, 2),
+    );
+  };
+
+  const copyAllPrompts = async () => {
+    if (!draftSettings) {
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(
+        JSON.stringify(normalizePromptSettings(draftSettings.promptSettings), null, 2),
+      );
+      setPromptCopied(true);
+      window.setTimeout(() => setPromptCopied(false), 1600);
+    } catch (copyError) {
+      setError(
+        copyError instanceof Error
+          ? copyError.message
+          : "プロンプトのコピーに失敗しました。",
+      );
+    }
+  };
+
+  const importPrompts = async (event: ReactChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file || !draftSettings) {
+      return;
+    }
+    try {
+      const importedPrompts = parsePromptImport(await file.text());
+      if (importedPrompts.length === 0) {
+        setError("インポートできるプロンプトが見つかりませんでした。");
+        return;
+      }
+      const existingIds = new Set(
+        normalizePromptSettings(draftSettings.promptSettings).prompts.map(
+          (prompt) => prompt.id,
+        ),
+      );
+      const promptsToAdd = importedPrompts.map((prompt) => {
+        let id = prompt.id;
+        while (existingIds.has(id)) {
+          id = createPromptId();
+        }
+        existingIds.add(id);
+        return {
+          ...prompt,
+          id,
+          name: normalizePromptName(prompt.name, "Imported Prompt"),
+        };
+      });
+      setEditingPromptId(promptsToAdd[0]?.id ?? null);
+      updatePromptSettings((current) => ({
+        ...current,
+        prompts: [...current.prompts, ...promptsToAdd],
+      }));
+    } catch (importError) {
+      setError(
+        importError instanceof Error
+          ? importError.message
+          : "プロンプトのインポートに失敗しました。",
+      );
+    }
+  };
+
   const closeSettingsPanel = useCallback(() => {
     setSettingsOpen(false);
     if (!draftSettings || savingSettings) {
@@ -2031,6 +2434,17 @@ function App() {
   const saveSettingsAndClose = useCallback(() => {
     void saveSettings(draftSettings, { closePanelOnSuccess: true });
   }, [draftSettings, saveSettings]);
+
+  const closePromptEditor = useCallback(() => {
+    setPromptEditorOpen(false);
+    if (!draftSettings || savingSettings) {
+      return;
+    }
+    const nextSnapshot = getSettingsSnapshot(draftSettings);
+    if (nextSnapshot !== lastSavedSettingsSnapshotRef.current) {
+      void saveSettings(draftSettings);
+    }
+  }, [draftSettings, getSettingsSnapshot, saveSettings, savingSettings]);
 
   useEffect(() => {
     if (!draftSettings || !meta || savingSettings) {
@@ -2152,6 +2566,16 @@ function App() {
 
   const appReady = Boolean(draftSettings && meta);
   const hasActiveCapture = status !== "idle" && status !== "error";
+  const promptSettings = draftSettings
+    ? normalizePromptSettings(draftSettings.promptSettings)
+    : null;
+  const promptList = promptSettings?.prompts ?? [];
+  const activePromptId = promptSettings?.activePromptId ?? "";
+  const editingPrompt =
+    promptList.find((prompt) => prompt.id === editingPromptId) ??
+    promptList.find((prompt) => prompt.id === activePromptId) ??
+    promptList[0] ??
+    null;
   const generatedLiveTitle = formatSessionTitle(liveSessionStartedAt);
   const totalDuration = deferredSegments.at(-1)
     ? deferredSegments.at(-1)!.startedAt + deferredSegments.at(-1)!.duration
@@ -2544,16 +2968,38 @@ function App() {
         <div className="flex flex-1 flex-col gap-4">
           <button
             type="button"
-            onClick={() => setRecordsOpen(true)}
+            onClick={() => {
+              if (promptEditorOpen) {
+                closePromptEditor();
+              }
+              setRecordsOpen(true);
+            }}
             className="flex h-10 w-10 items-center justify-center rounded-lg bg-white/5 text-[#007aff] transition-colors"
             aria-label="Open records"
           >
             <FolderOpen className="size-5" />
           </button>
+          <button
+            type="button"
+            onClick={togglePromptEditor}
+            className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
+              promptEditorOpen
+                ? "bg-white/10 text-white"
+                : "text-slate-500 hover:bg-white/5 hover:text-white"
+            }`}
+            aria-label="Open prompt settings"
+          >
+            <FileText className="size-5" />
+          </button>
         </div>
         <button
           type="button"
-          onClick={() => setSettingsOpen(true)}
+          onClick={() => {
+            if (promptEditorOpen) {
+              closePromptEditor();
+            }
+            setSettingsOpen(true);
+          }}
           className="flex h-10 w-10 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-white/5 hover:text-white"
           aria-label="Open settings"
         >
@@ -2585,7 +3031,7 @@ function App() {
         <div className="border-b border-slate-200 px-4 py-3">
           <div className="flex items-center gap-2">
             <Button
-              className="min-w-[6.75rem] rounded-lg px-3 py-2.5"
+              className="min-w-[8.5rem] rounded-lg px-4 py-2.5"
               onClick={() => void startRecording()}
               disabled={!appReady || hasActiveCapture}
             >
@@ -2598,14 +3044,6 @@ function App() {
             </Button>
             <button
               type="button"
-              onClick={() => void refreshHistory()}
-              className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition-colors hover:border-slate-300 hover:text-slate-700"
-              aria-label="Refresh records"
-            >
-              <RefreshCcw className="size-4" />
-            </button>
-            <button
-              type="button"
               onClick={() =>
                 setHistorySortOrder((current) =>
                   current === "newest" ? "oldest" : "newest",
@@ -2614,7 +3052,7 @@ function App() {
               className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition-colors hover:border-slate-300 hover:text-slate-700"
               aria-label="Toggle sort order"
             >
-              <SlidersHorizontal className="size-4" />
+              <Filter className="size-4" />
             </button>
             <button
               type="button"
@@ -2777,6 +3215,314 @@ function App() {
         <div className="h-full w-px bg-slate-200 transition-colors group-hover:bg-[#007aff] group-active:bg-[#007aff]" />
       </div>
 
+      <AnimatePresence>
+        {promptEditorOpen ? (
+          <>
+            <motion.button
+              type="button"
+              aria-label="Close prompt editor"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={closePromptEditor}
+              className="fixed inset-0 z-40 bg-slate-950/30"
+            />
+            <motion.section
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="prompt-editor-title"
+              initial={{ x: -28, opacity: 0 }}
+              animate={{ x: 0, opacity: 1 }}
+              exit={{ x: -18, opacity: 0 }}
+              transition={{ duration: 0.22, ease: "easeOut" }}
+              className="fixed inset-y-0 left-0 right-0 z-50 flex flex-col overflow-hidden bg-white shadow-[0_24px_90px_rgba(15,23,42,0.22)] lg:left-16"
+            >
+              <div className="flex flex-col gap-4 border-b border-slate-200 bg-white px-5 py-4 lg:flex-row lg:items-center lg:justify-between">
+                <div>
+                  <h2
+                    id="prompt-editor-title"
+                    className="text-xl font-semibold text-slate-900"
+                  >
+                    プロンプト設定
+                  </h2>
+                </div>
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                  <select
+                    value={activePromptId}
+                    onChange={(event) => selectActivePrompt(event.target.value)}
+                    className="field-input min-w-[16rem]"
+                    disabled={!draftSettings || promptList.length === 0}
+                  >
+                    {promptList.map((prompt) => (
+                      <option key={prompt.id} value={prompt.id}>
+                        {prompt.name}
+                      </option>
+                    ))}
+                  </select>
+                  <Button
+                    type="button"
+                    className="rounded-xl"
+                    onClick={() => void saveSettings(draftSettings)}
+                    disabled={!draftSettings || savingSettings}
+                  >
+                    {savingSettings ? (
+                      <LoaderCircle className="size-4 animate-spin" />
+                    ) : (
+                      <Save className="size-4" />
+                    )}
+                    保存
+                  </Button>
+                  <button
+                    type="button"
+                    onClick={() => promptImportInputRef.current?.click()}
+                    disabled={!draftSettings}
+                    className="inline-flex h-11 w-11 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-500 transition-colors hover:border-slate-300 hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
+                    aria-label="プロンプトをインポート"
+                  >
+                    <Upload className="size-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={exportPrompts}
+                    disabled={!draftSettings || promptList.length === 0}
+                    className="inline-flex h-11 w-11 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-500 transition-colors hover:border-slate-300 hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
+                    aria-label="プロンプトをエクスポート"
+                  >
+                    <Download className="size-4" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+                <aside className="flex w-full flex-col border-b border-slate-200 bg-[#f8f9fb] md:w-80 md:border-b-0 md:border-r">
+                  <div className="border-b border-slate-200 p-4">
+                    <Button
+                      type="button"
+                      className="w-full rounded-xl"
+                      onClick={addPrompt}
+                      disabled={!draftSettings}
+                    >
+                      <FileText className="size-4" />
+                      新規プロンプト
+                    </Button>
+                    <input
+                      ref={promptImportInputRef}
+                      type="file"
+                      accept="application/json,.json"
+                      onChange={(event) => void importPrompts(event)}
+                      className="hidden"
+                    />
+                  </div>
+
+                  <div className="app-scrollbar min-h-0 flex-1 overflow-y-auto">
+                    {promptList.length === 0 ? (
+                      <div className="border-b border-slate-200 px-4 py-5 text-sm leading-6 text-slate-500">
+                        プロンプトがまだありません。
+                      </div>
+                    ) : (
+                      promptList.map((prompt, index) => {
+                        const isSelected = prompt.id === editingPrompt?.id;
+                        const isActive = prompt.id === activePromptId;
+                        return (
+                          <div
+                            key={prompt.id}
+                            className={`border-b border-slate-200 px-4 py-3 transition-colors ${
+                              isSelected
+                                ? "border-l-2 border-l-[#007aff] bg-white"
+                                : "hover:bg-white/70"
+                            }`}
+                          >
+                            <button
+                              type="button"
+                              onClick={() => setEditingPromptId(prompt.id)}
+                              className="block w-full text-left"
+                            >
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                  <p className="truncate text-sm font-semibold text-slate-900">
+                                    {prompt.name}
+                                  </p>
+                                  <p className="mt-1 line-clamp-2 text-xs leading-5 text-slate-500">
+                                    {prompt.content.trim() || "内容未入力"}
+                                  </p>
+                                </div>
+                                {isActive ? (
+                                  <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.16em] text-[#007aff]">
+                                    Active
+                                  </span>
+                                ) : null}
+                              </div>
+                            </button>
+                            <div className="mt-3 flex items-center gap-1.5">
+                              <button
+                              type="button"
+                              onClick={() => movePrompt(prompt.id, -1)}
+                              disabled={index === 0}
+                              className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-xs font-bold text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
+                              aria-label={`${prompt.name} を上へ移動`}
+                            >
+                              ↑
+                              </button>
+                              <button
+                              type="button"
+                              onClick={() => movePrompt(prompt.id, 1)}
+                              disabled={index === promptList.length - 1}
+                              className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-xs font-bold text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
+                              aria-label={`${prompt.name} を下へ移動`}
+                            >
+                              ↓
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => deletePrompt(prompt.id)}
+                              disabled={promptList.length <= 1}
+                              className="ml-auto inline-flex h-8 w-8 items-center justify-center rounded-lg text-rose-500 transition-colors hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-40"
+                              aria-label={`${prompt.name} を削除`}
+                            >
+                              <Trash2 className="size-4" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => selectActivePrompt(prompt.id)}
+                              className="inline-flex h-8 items-center justify-center rounded-lg px-2.5 text-xs font-semibold text-slate-600 transition-colors hover:bg-blue-50 hover:text-[#007aff]"
+                            >
+                              使用
+                            </button>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </aside>
+
+                <main className="min-h-0 flex-1 overflow-hidden bg-white">
+                  {editingPrompt ? (
+                    <div className="flex h-full flex-col">
+                      <div className="border-b border-slate-200 px-5 py-4">
+                        <p className="field-label">プロンプト名</p>
+                        {promptNameEditState?.promptId === editingPrompt.id ? (
+                          <div className="mt-2 flex min-w-0 items-center gap-2">
+                            <input
+                              value={promptNameEditState.draft}
+                              onChange={(event) =>
+                                setPromptNameEditState((current) =>
+                                  current
+                                    ? { ...current, draft: event.target.value }
+                                    : current,
+                                )
+                              }
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter") {
+                                  event.preventDefault();
+                                  savePromptNameEdit();
+                                }
+                                if (event.key === "Escape") {
+                                  event.preventDefault();
+                                  cancelPromptNameEdit();
+                                }
+                              }}
+                              className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-lg font-bold text-slate-900 outline-none focus:border-[#007aff] focus:ring-4 focus:ring-[#007aff]/10"
+                              placeholder="プロンプト名"
+                            />
+                            <button
+                              type="button"
+                              onClick={savePromptNameEdit}
+                              className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition-colors hover:border-slate-300 hover:text-slate-700"
+                              aria-label="プロンプト名を保存"
+                            >
+                              <Check className="size-4" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={cancelPromptNameEdit}
+                              className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition-colors hover:border-slate-300 hover:text-slate-700"
+                              aria-label="プロンプト名の編集をキャンセル"
+                            >
+                              <X className="size-4" />
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="mt-2 flex min-w-0 items-center gap-2">
+                            <h3 className="truncate text-xl font-bold text-slate-900">
+                              {editingPrompt.name}
+                            </h3>
+                            <button
+                              type="button"
+                              onClick={() => beginPromptNameEdit(editingPrompt)}
+                              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
+                              aria-label="プロンプト名を編集"
+                            >
+                              <Pencil className="size-4" />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="grid min-h-0 flex-1 grid-rows-2 md:grid-cols-2 md:grid-rows-1">
+                        <section className="flex min-h-0 flex-col border-b border-slate-200 md:border-b-0 md:border-r">
+                          <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3">
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-slate-400">
+                              Edit
+                            </p>
+                            <button
+                              type="button"
+                              onClick={() => void copyAllPrompts()}
+                              disabled={!draftSettings || promptList.length === 0}
+                              className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
+                              aria-label="全プロンプトをコピー"
+                              title={promptCopied ? "コピーしました" : "全プロンプトをコピー"}
+                            >
+                              <Copy className="size-4" />
+                            </button>
+                          </div>
+                          <textarea
+                            value={editingPrompt.content}
+                            onChange={(event) =>
+                              updatePrompt(editingPrompt.id, {
+                                content: event.target.value,
+                              })
+                            }
+                            className="app-scrollbar min-h-0 flex-1 resize-none border-0 bg-white p-5 text-sm leading-7 text-slate-800 outline-none"
+                            placeholder="ここに文字起こし整形用のプロンプトを書いてください。"
+                          />
+                        </section>
+
+                        <section className="flex min-h-0 flex-col bg-slate-50">
+                          <div className="border-b border-slate-100 bg-white px-5 py-3">
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-slate-400">
+                              Markdown Preview
+                            </p>
+                          </div>
+                          <div className="app-scrollbar min-h-0 flex-1 overflow-y-auto bg-white p-5">
+                            {editingPrompt.content.trim() ? (
+                              <div
+                                className="markdown-preview text-sm leading-7 text-slate-700"
+                                dangerouslySetInnerHTML={{
+                                  __html: renderMarkdown(editingPrompt.content),
+                                }}
+                              />
+                            ) : (
+                              <div className="text-sm leading-6 text-slate-500">
+                                プレビューする内容がまだありません。
+                              </div>
+                            )}
+                          </div>
+                        </section>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex h-full items-center justify-center p-8 text-sm text-slate-500">
+                      左側からプロンプトを選択してください。
+                    </div>
+                  )}
+                </main>
+              </div>
+            </motion.section>
+          </>
+        ) : null}
+      </AnimatePresence>
+
       <section className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <header className="flex h-16 flex-shrink-0 items-center justify-between border-b border-slate-200 bg-white/90 px-4 backdrop-blur-sm sm:px-6 lg:px-8">
           <div className="flex min-w-0 flex-1 items-center gap-3">
@@ -2896,15 +3642,6 @@ function App() {
               aria-label="Download transcript"
             >
               <Download className="size-4" />
-            </button>
-            <button
-              type="button"
-              onClick={() => void shareTranscript()}
-              disabled={!exportAvailable}
-              className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-500 transition-colors hover:border-slate-300 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
-              aria-label="Share transcript"
-            >
-              <Share2 className="size-4" />
             </button>
             <button
               type="button"
@@ -3048,24 +3785,36 @@ function App() {
 </div>
 {showRawTranscript ? (
   <div className="relative min-w-0 pr-3">
-    <div className="flex items-center gap-2">
-      <span>{"\u6587\u5b57\u8d77\u3053\u3057"}</span>
-      <button
-        type="button"
-        onClick={() => {
-          if (!showLlmRefined) {
-            return;
-          }
-          setShowRawTranscript(false);
-        }}
-        disabled={!showLlmRefined}
-        className={`relative h-4 w-7 rounded-full transition-colors ${
-          showRawTranscript ? "bg-[#007aff]" : "bg-slate-300"
-        } ${!showLlmRefined ? "cursor-not-allowed opacity-40" : ""}`}
-        aria-label={"\u6587\u5b57\u8d77\u3053\u3057\u5217\u306e\u8868\u793a\u3092\u5207\u308a\u66ff\u3048"}
-      >
-        <span className="absolute right-0.5 top-0.5 h-3 w-3 rounded-full bg-white" />
-      </button>
+    <div className="flex items-center justify-between gap-3">
+      <div className="flex items-center gap-2">
+        <span>{"\u6587\u5b57\u8d77\u3053\u3057"}</span>
+        <button
+          type="button"
+          onClick={() => {
+            if (!showLlmRefined) {
+              return;
+            }
+            setShowRawTranscript(false);
+          }}
+          disabled={!showLlmRefined}
+          className={`relative h-4 w-7 rounded-full transition-colors ${
+            showRawTranscript ? "bg-[#007aff]" : "bg-slate-300"
+          } ${!showLlmRefined ? "cursor-not-allowed opacity-40" : ""}`}
+          aria-label={"\u6587\u5b57\u8d77\u3053\u3057\u5217\u306e\u8868\u793a\u3092\u5207\u308a\u66ff\u3048"}
+        >
+          <span className="absolute right-0.5 top-0.5 h-3 w-3 rounded-full bg-white" />
+        </button>
+      </div>
+      {!showLlmRefined ? (
+        <button
+          type="button"
+          onClick={() => setShowLlmRefined(true)}
+          className="rounded-full border border-[#007aff] px-2 py-0.5 text-[10px] font-bold text-[#007aff]"
+          aria-label={"LLM\u6574\u5f62\u5217\u3092\u518d\u8868\u793a"}
+        >
+          {"LLM\u6574\u5f62\u3092\u8868\u793a"}
+        </button>
+      ) : null}
     </div>
     <button
       type="button"
@@ -3115,16 +3864,7 @@ function App() {
     </div>
   </div>
 ) : (
-  <div className="min-w-0">
-    <button
-      type="button"
-      onClick={() => setShowLlmRefined(true)}
-      className="rounded-full border border-[#007aff] px-2 py-0.5 text-[10px] font-bold text-[#007aff]"
-      aria-label={"LLM\u6574\u5f62\u5217\u3092\u518d\u8868\u793a"}
-    >
-      {"LLM\u6574\u5f62\u3092\u8868\u793a"}
-    </button>
-  </div>
+  <div className="min-w-0" aria-hidden />
 )}
                 </div>
 
@@ -3181,7 +3921,10 @@ function App() {
                                   <button
                                     type="button"
                                     onClick={() =>
-                                      renameSpeaker(segment.speakerIndex, segment.speakerLabel)
+                                      openSpeakerRenameModal(
+                                        segment.speakerIndex,
+                                        segment.speakerLabel,
+                                      )
                                     }
                                     className="inline-flex h-5 w-5 items-center justify-center rounded text-slate-300 transition-colors hover:bg-slate-100 hover:text-slate-500"
                                     aria-label={`${segment.speakerLabel} \u3092\u7de8\u96c6`}
@@ -3772,6 +4515,40 @@ function App() {
                         </div>
                       </div>
 
+                      <div className="space-y-2 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                        <label className="field-label">使用プロンプト</label>
+                        <div className="flex gap-2">
+                          <select
+                            value={activePromptId}
+                            onChange={(event) => selectActivePrompt(event.target.value)}
+                            className="field-input"
+                          >
+                            {promptList.map((prompt) => (
+                              <option key={prompt.id} value={prompt.id}>
+                                {prompt.name}
+                              </option>
+                            ))}
+                          </select>
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            className="h-11 shrink-0 rounded-xl px-4 text-sm"
+                            onClick={() => void saveSettings(draftSettings)}
+                            disabled={savingSettings || promptList.length === 0}
+                          >
+                            {savingSettings ? (
+                              <LoaderCircle className="size-4 animate-spin" />
+                            ) : (
+                              <Save className="size-4" />
+                            )}
+                            保存
+                          </Button>
+                        </div>
+                        <p className="text-xs leading-5 text-slate-500">
+                          プロンプト編集画面と同期しています。選択したプロンプトがリアルタイム整形と一括整形に使われます。
+                        </p>
+                      </div>
+
                       <label className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
                         <div>
                           <p className="text-sm font-medium text-slate-900">
@@ -4275,6 +5052,99 @@ function App() {
               <div className="app-scrollbar overflow-y-auto px-5 py-5">
                 <SettingsHelpContent topic={settingsHelpTopic} />
               </div>
+            </motion.div>
+          </>
+        ) : null}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {speakerRenameState ? (
+          <>
+            <motion.button
+              type="button"
+              aria-label="Close speaker rename modal"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={closeSpeakerRenameModal}
+              className="fixed inset-0 z-[70] bg-slate-950/35"
+            />
+            <motion.div
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="speaker-rename-title"
+              initial={{ opacity: 0, y: 18, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 12, scale: 0.98 }}
+              transition={{ duration: 0.18, ease: "easeOut" }}
+              className="fixed left-1/2 top-1/2 z-[80] flex w-[min(92vw,520px)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-[0_24px_90px_rgba(15,23,42,0.22)]"
+            >
+              <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4">
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-slate-400">
+                    {"\u8a71\u8005"}
+                  </p>
+                  <h3
+                    id="speaker-rename-title"
+                    className="mt-1 text-lg font-semibold text-slate-900"
+                  >
+                    {"\u8a71\u8005\u540d\u3092\u5909\u66f4"}
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={closeSpeakerRenameModal}
+                  className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 text-slate-500 transition-colors hover:border-slate-300 hover:text-slate-700"
+                  aria-label="Close speaker rename"
+                >
+                  <X className="size-4" />
+                </button>
+              </div>
+              <form
+                className="space-y-4 px-5 py-5"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  submitSpeakerRename();
+                }}
+              >
+                <div className="space-y-2">
+                  <label
+                    htmlFor="speaker-rename-input"
+                    className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-400"
+                  >
+                    {"\u8868\u793a\u540d"}
+                  </label>
+                  <input
+                    id="speaker-rename-input"
+                    ref={speakerRenameInputRef}
+                    value={speakerRenameState.draft}
+                    onChange={(event) =>
+                      setSpeakerRenameState((current) =>
+                        current ? { ...current, draft: event.target.value } : current,
+                      )
+                    }
+                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-medium text-slate-900 outline-none transition focus:border-[#007aff] focus:ring-4 focus:ring-[#007aff]/10"
+                    placeholder={speakerRenameState.currentLabel}
+                  />
+                  <p className="text-sm leading-6 text-slate-500">
+                    {
+                      "\u540c\u3058\u8a71\u8005\u3068\u3057\u3066\u6271\u308f\u308c\u3066\u3044\u308b\u884c\u306b\u307e\u3068\u3081\u3066\u53cd\u6620\u3055\u308c\u307e\u3059\u3002"
+                    }
+                  </p>
+                </div>
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={closeSpeakerRenameModal}
+                    className="inline-flex h-10 items-center justify-center rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-600 transition-colors hover:border-slate-300 hover:text-slate-800"
+                  >
+                    {"\u30ad\u30e3\u30f3\u30bb\u30eb"}
+                  </button>
+                  <Button type="submit" className="h-10 rounded-xl px-4 text-sm">
+                    {"\u5909\u66f4"}
+                  </Button>
+                </div>
+              </form>
             </motion.div>
           </>
         ) : null}

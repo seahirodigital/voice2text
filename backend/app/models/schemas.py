@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ProviderConfig(BaseModel):
@@ -38,8 +38,43 @@ class LlmSettings(BaseModel):
     debounce_ms: int = Field(default=5000, alias="debounceMs", ge=0, le=10000)
     max_wait_ms: int = Field(default=5000, alias="maxWaitMs", ge=0, le=30000)
     complete_only: bool = Field(default=True, alias="completeOnly")
+    system_prompt: str = Field(default="", alias="systemPrompt")
 
     model_config = ConfigDict(populate_by_name=True)
+
+
+DEFAULT_PROMPT_ID = "default-cleanup"
+DEFAULT_PROMPT_NAME = "標準整形"
+DEFAULT_PROMPT_CONTENT = (
+    "You are an editor for Japanese speech recognition output. "
+    "Rewrite the lines marked TARGET into one natural Japanese paragraph. "
+    "Use PREVIOUS lines only as context. Add punctuation and normalize kanji/kana. "
+    "Do not repeat PREVIOUS content. Output only information newly present in TARGET. "
+    "If TARGET overlaps with PREVIOUS, omit the duplicated part. "
+    "Do not add facts that are not present. Return only the refined paragraph."
+)
+
+
+class PromptPreset(BaseModel):
+    id: str = DEFAULT_PROMPT_ID
+    name: str = DEFAULT_PROMPT_NAME
+    content: str = DEFAULT_PROMPT_CONTENT
+
+
+class PromptSettings(BaseModel):
+    active_prompt_id: str = Field(default=DEFAULT_PROMPT_ID, alias="activePromptId")
+    prompts: list[PromptPreset] = Field(default_factory=lambda: [PromptPreset()])
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    @model_validator(mode="after")
+    def ensure_active_prompt(self) -> "PromptSettings":
+        if not self.prompts:
+            self.prompts = [PromptPreset()]
+        prompt_ids = {prompt.id for prompt in self.prompts}
+        if self.active_prompt_id not in prompt_ids:
+            self.active_prompt_id = self.prompts[0].id
+        return self
 
 
 class PathSettings(BaseModel):
@@ -81,6 +116,10 @@ class AppSettings(BaseModel):
     transcription: TranscriptionSettings
     api_settings: ApiSettings = Field(alias="apiSettings")
     llm: LlmSettings = LlmSettings()
+    prompt_settings: PromptSettings = Field(
+        default_factory=PromptSettings,
+        alias="promptSettings",
+    )
 
     model_config = ConfigDict(populate_by_name=True)
 

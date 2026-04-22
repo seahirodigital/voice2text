@@ -8,7 +8,7 @@ from moonshine_voice import ModelArch, supported_languages
 from moonshine_voice.download import find_model_info
 
 from app.config import load_settings, resolve_paths, save_settings
-from app.models.schemas import AppSettings, MetaResponse, SettingsResponse
+from app.models.schemas import AppSettings, LlmSettings, MetaResponse, SettingsResponse
 
 
 MODEL_PRESET_CANDIDATES: dict[str, list[ModelArch]] = {
@@ -51,6 +51,20 @@ class SettingsService:
 
     def get_settings(self) -> AppSettings:
         return load_settings()
+
+    def get_runtime_llm_settings(self, settings: AppSettings | None = None) -> LlmSettings:
+        resolved_settings = settings or load_settings()
+        active_prompt = next(
+            (
+                prompt
+                for prompt in resolved_settings.prompt_settings.prompts
+                if prompt.id == resolved_settings.prompt_settings.active_prompt_id
+            ),
+            resolved_settings.prompt_settings.prompts[0],
+        )
+        return resolved_settings.llm.model_copy(
+            update={"system_prompt": active_prompt.content}
+        )
 
     def update_settings(self, settings: AppSettings) -> SettingsResponse:
         current_settings = load_settings()
