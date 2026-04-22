@@ -4260,7 +4260,7 @@ function App() {
                   disabled={status !== "recording"}
                 >
                   <MicOff className="size-4" />
-                  文字認識中止
+                  認識中止
                 </Button>
               )
             ) : null}
