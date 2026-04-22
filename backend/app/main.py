@@ -162,6 +162,14 @@ async def create_session_minutes(session_id: str):
         recordings_root=Path(paths.temp_recordings_root),
     )
     try:
+        progress_detail = store.update_minutes_progress(
+            session_id,
+            progress=0,
+            minutes_model=MINUTES_SUMMARY_MODEL,
+        )
+        if progress_detail is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+
         markdown, segments, model = await create_minutes_for_session(
             store=store,
             models_root=Path(paths.models_root),
@@ -169,6 +177,11 @@ async def create_session_minutes(session_id: str):
             session_id=session_id,
             transcription_settings=settings.transcription,
             llm_settings=settings.llm,
+            progress_callback=lambda progress: store.update_minutes_progress(
+                session_id,
+                progress=progress,
+                minutes_model=MINUTES_SUMMARY_MODEL,
+            ),
         )
         detail = store.update_minutes(
             session_id,
@@ -295,7 +308,7 @@ async def transcription_socket(websocket: WebSocket):
             elif envelope.type == "resume_session":
                 session.resume()
             elif envelope.type == "stop_session":
-                await session.finalize_after_refinement()
+                session.finalize()
             else:
                 await websocket.send_json(
                     {

@@ -146,9 +146,38 @@ class SessionStore:
                     3,
                 )
         detail.minutes_status = "error" if minutes_error else "complete"
+        detail.minutes_progress = 100 if not minutes_error else detail.minutes_progress
         detail.minutes_updated_at = now
         detail.minutes_model = minutes_model
         detail.minutes_error = minutes_error
+        detail.updated_at = now
+
+        summary = self.save_session(detail)
+        return SessionDetail.model_validate(
+            {
+                **detail.model_dump(by_alias=True),
+                **summary.model_dump(by_alias=True),
+            }
+        )
+
+    def update_minutes_progress(
+        self,
+        session_id: str,
+        *,
+        progress: int,
+        minutes_model: str | None = None,
+    ) -> SessionDetail | None:
+        detail = self.get_session(session_id)
+        if detail is None:
+            return None
+
+        now = utc_now_iso()
+        detail.minutes_status = "processing"
+        detail.minutes_progress = max(0, min(100, progress))
+        detail.minutes_updated_at = now
+        detail.minutes_error = None
+        if minutes_model is not None:
+            detail.minutes_model = minutes_model
         detail.updated_at = now
 
         summary = self.save_session(detail)

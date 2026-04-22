@@ -96,14 +96,14 @@ const FALLBACK_FASTER_WHISPER_MODELS = [
   "large-v3",
 ];
 const DEFAULT_TRANSCRIPT_COLUMN_WIDTHS = {
-  speaker: 112,
-  time: 132,
-  transcript: 520,
-  llm: 360,
+  speaker: 100,
+  time: 100,
+  transcript: 400,
+  llm: 400,
 } as const;
 const MIN_TRANSCRIPT_COLUMN_WIDTHS = {
-  speaker: 84,
-  time: 112,
+  speaker: 80,
+  time: 80,
   transcript: 260,
   llm: 220,
 } as const;
@@ -205,6 +205,7 @@ interface RecordView {
   lineCount: number;
   audioUrl?: string | null;
   minutesStatus?: "idle" | "processing" | "complete" | "error";
+  minutesProgress?: number;
   minutesUpdatedAt?: string | null;
   summary: string;
   badgeLabel: string;
@@ -405,6 +406,7 @@ function toHistoryRecord(session: SessionSummary): RecordView {
     lineCount: session.lineCount,
     audioUrl: session.audioUrl ?? null,
     minutesStatus: session.minutesStatus ?? "idle",
+    minutesProgress: session.minutesProgress ?? 0,
     minutesUpdatedAt: session.minutesUpdatedAt ?? null,
     summary: session.deviceLabel,
     badgeLabel: "Completed",
@@ -424,6 +426,7 @@ function toSessionSummary(detail: SessionDetail): SessionSummary {
     title: detail.title,
     audioUrl: detail.audioUrl ?? null,
     minutesStatus: detail.minutesStatus,
+    minutesProgress: detail.minutesProgress ?? 0,
     minutesUpdatedAt: detail.minutesUpdatedAt,
     minutesModel: detail.minutesModel,
     minutesError: detail.minutesError,
@@ -456,18 +459,6 @@ function formatSidebarDate(value?: string | null) {
   }).format(parsed);
 }
 
-function formatHeaderDate(value?: string | null) {
-  const parsed = parseDate(value);
-  if (!parsed) {
-    return "No date";
-  }
-  return new Intl.DateTimeFormat("en-US", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  }).format(parsed);
-}
-
 function formatSessionTitle(value?: string | null) {
   const parsed = parseDate(value);
   const date = parsed ?? new Date();
@@ -496,10 +487,6 @@ function formatLongClock(seconds: number) {
     .padStart(2, "0");
   const secs = (total % 60).toString().padStart(2, "0");
   return `${hours}:${minutes}:${secs}`;
-}
-
-function formatReference(id?: string | null) {
-  return `REF: ${(id ?? "live").slice(0, 10).toUpperCase()}`;
 }
 
 function sanitizeFilename(value: string) {
@@ -734,6 +721,7 @@ function App() {
   const [activeTranscriptView, setActiveTranscriptView] = useState<
     "realtime" | "minutes"
   >("realtime");
+  const [showRawTranscript, setShowRawTranscript] = useState(true);
   const [showLlmRefined, setShowLlmRefined] = useState(true);
   const [currentAudioUrl, setCurrentAudioUrl] = useState<string | null>(null);
   const [deviceId, setDeviceId] = useState(() =>
@@ -743,7 +731,7 @@ function App() {
   );
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [status, setStatus] = useState<RecordingStatus>("idle");
-  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  const [, setCurrentSessionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [waveform, setWaveform] = useState<number[]>(EMPTY_WAVEFORM);
   const [savingSettings, setSavingSettings] = useState(false);
@@ -757,6 +745,7 @@ function App() {
   const [inputGainDb, setInputGainDb] = useState(INPUT_GAIN_DEFAULT_DB);
   const [sidebarWidth, setSidebarWidth] = useState(320);
   const [minutesEditorPercent, setMinutesEditorPercent] = useState(50);
+  const [sidebarSelectionMode, setSidebarSelectionMode] = useState(false);
   const [sidebarSelectedRecordIds, setSidebarSelectedRecordIds] = useState<string[]>(
     [],
   );
@@ -777,6 +766,7 @@ function App() {
     string | null
   >(null);
   const [isAudioPlaying, setIsAudioPlaying] = useState(false);
+  const [speakerEditMode, setSpeakerEditMode] = useState(false);
   const [liveSessionStartedAt, setLiveSessionStartedAt] = useState<string | null>(
     null,
   );
@@ -870,6 +860,22 @@ function App() {
     }
     window.localStorage.setItem(DEVICE_ID_STORAGE_KEY, deviceId);
   }, [deviceId]);
+
+  useEffect(() => {
+    if (minutesProcessingIds.length === 0) {
+      return;
+    }
+
+    const handle = window.setInterval(() => {
+      void refreshHistory().catch(() => {
+        // Keep the current UI state if polling fails mid-process.
+      });
+    }, 900);
+
+    return () => {
+      window.clearInterval(handle);
+    };
+  }, [minutesProcessingIds]);
 
   const refreshDevices = async () => {
     if (!navigator.mediaDevices?.enumerateDevices) {
@@ -1717,6 +1723,18 @@ function App() {
 
   const generateMinutesForSession = async (sessionId: string) => {
     setMinutesProcessingIds((current) => [...new Set([...current, sessionId])]);
+    setHistory((current) =>
+      current.map((entry) =>
+        entry.id === sessionId
+          ? {
+              ...entry,
+              minutesStatus: "processing",
+              minutesProgress: 0,
+              minutesError: null,
+            }
+          : entry,
+      ),
+    );
     try {
       const detail = await apiFetch<SessionDetail>(`/api/sessions/${sessionId}/minutes`, {
         method: "POST",
@@ -1980,12 +1998,19 @@ function App() {
   };
 
   const toggleSidebarRecordSelection = (sessionId: string) => {
+    setSidebarSelectionMode(true);
     lastSidebarSelectedRecordIdRef.current = sessionId;
     setSidebarSelectedRecordIds((current) =>
       current.includes(sessionId)
         ? current.filter((entry) => entry !== sessionId)
         : [...current, sessionId],
     );
+  };
+
+  const exitSidebarSelectionMode = () => {
+    setSidebarSelectionMode(false);
+    setSidebarSelectedRecordIds([]);
+    lastSidebarSelectedRecordIdRef.current = null;
   };
 
   const updateDraftSettings = (updater: (current: AppSettings) => AppSettings) => {
@@ -2037,15 +2062,35 @@ function App() {
   const activeModelOptions =
     meta?.availableModelsByLanguage[draftSettings?.transcription.language ?? "ja"] ??
     ["tiny"];
-  const visibleTranscriptColumns: TranscriptColumnKey[] = showLlmRefined
-    ? ["speaker", "time", "transcript", "llm"]
-    : ["speaker", "time", "transcript"];
+  const effectiveTranscriptColumnWidths: TranscriptColumnWidths = {
+    ...transcriptColumnWidths,
+  };
+  if (!showRawTranscript && showLlmRefined) {
+    effectiveTranscriptColumnWidths.llm += effectiveTranscriptColumnWidths.transcript;
+  }
+  if (showRawTranscript && !showLlmRefined) {
+    effectiveTranscriptColumnWidths.transcript += effectiveTranscriptColumnWidths.llm;
+  }
+
+  const visibleTranscriptColumns: TranscriptColumnKey[] = [
+    "speaker",
+    "time",
+    ...(showRawTranscript ? (["transcript"] as const) : []),
+    ...(showLlmRefined ? (["llm"] as const) : []),
+  ];
+  const visibleTranscriptWidthTotal = visibleTranscriptColumns.reduce(
+    (total, column) => total + effectiveTranscriptColumnWidths[column],
+    0,
+  );
   const transcriptGridTemplate = visibleTranscriptColumns
-    .map((column) => `${transcriptColumnWidths[column]}px`)
+    .map(
+      (column) =>
+        `${(effectiveTranscriptColumnWidths[column] / visibleTranscriptWidthTotal) * 100}%`,
+    )
     .join(" ");
   const transcriptTableMinWidth =
     visibleTranscriptColumns.reduce(
-      (total, column) => total + transcriptColumnWidths[column],
+      (total, column) => total + effectiveTranscriptColumnWidths[column],
       0,
     ) +
     Math.max(0, visibleTranscriptColumns.length - 1) * TRANSCRIPT_COLUMN_GAP_PX;
@@ -2153,6 +2198,7 @@ function App() {
   const selectedMinutesProcessing = Boolean(
     selectedSessionId && minutesProcessingIds.includes(selectedSessionId),
   );
+  const selectedMinutesProgress = selectedHistoryRecord?.minutesProgress ?? 0;
   const canDeleteSelectedSession = Boolean(selectedSessionId && !hasActiveCapture);
   const activeTitle = activeRecord?.title ?? "Voice2Text Workspace";
   const renderedMinutesHtml = renderMarkdown(minutesDraft);
@@ -2171,9 +2217,6 @@ function App() {
   const sidebarContextRecord = sidebarContextMenu
     ? sidebarHistoryRecordMap.get(sidebarContextMenu.recordId) ?? null
     : null;
-  const sidebarContextRecordIsSelected = sidebarContextRecord
-    ? sidebarSelectedRecordIdSet.has(sidebarContextRecord.id)
-    : false;
   const sidebarContextDeleteIds =
     sidebarContextRecord && validSidebarSelectedRecordIds.length > 0
       ? validSidebarSelectedRecordIds
@@ -2224,13 +2267,13 @@ function App() {
       return;
     }
 
-    if (event.shiftKey) {
+    if (sidebarSelectionMode && event.shiftKey) {
       event.preventDefault();
       selectSidebarRecordRange(record.id);
       return;
     }
 
-    if (event.ctrlKey || event.metaKey) {
+    if (sidebarSelectionMode && (event.ctrlKey || event.metaKey)) {
       event.preventDefault();
       toggleSidebarRecordSelection(record.id);
       return;
@@ -2638,10 +2681,6 @@ function App() {
                       return;
                     }
                     event.preventDefault();
-                    if (!sidebarSelectedRecordIdSet.has(record.id)) {
-                      setSidebarSelectedRecordIds([record.id]);
-                      lastSidebarSelectedRecordIdRef.current = record.id;
-                    }
                     setSidebarContextMenu({
                       recordId: record.id,
                       x: event.clientX,
@@ -2650,7 +2689,7 @@ function App() {
                   }}
                 >
                   <div className="flex items-start gap-3 px-4 py-3">
-                    {record.kind === "history" ? (
+                    {record.kind === "history" && sidebarSelectionMode ? (
                       <button
                         type="button"
                         disabled={isDisabled}
@@ -2808,13 +2847,6 @@ function App() {
                   </button>
                 )}
               </div>
-              <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-slate-500">
-                <span>{formatHeaderDate(activeRecord?.createdAt)}</span>
-                <span className="hidden h-4 w-px bg-slate-200 sm:block" />
-                <span className="app-mono text-[11px] uppercase tracking-[0.24em] text-slate-400">
-                  {formatReference(activeRecord?.id ?? currentSessionId)}
-                </span>
-              </div>
             </div>
           </div>
 
@@ -2968,83 +3000,132 @@ function App() {
                   className="sticky top-0 z-30 hidden border-b border-slate-200 bg-white px-0 py-4 text-[10px] font-bold uppercase tracking-[0.24em] text-slate-400 shadow-[0_1px_0_rgba(226,232,240,1)] lg:grid lg:gap-4"
                   style={transcriptGridStyle}
                 >
-                  <div className="relative min-w-0 pr-3">
-                    <span>話者</span>
-                    <button
-                      type="button"
-                      onPointerDown={(event) =>
-                        handleTranscriptColumnResizePointerDown("speaker", event)
-                      }
-                      onPointerMove={handleTranscriptColumnResizePointerMove}
-                      onPointerUp={handleTranscriptColumnResizePointerUp}
-                      onPointerCancel={handleTranscriptColumnResizePointerUp}
-                      className="group absolute -right-2 top-0 h-full w-4 cursor-col-resize touch-none"
-                      aria-label="話者列の幅を変更"
-                    >
-                      <span className="absolute left-1/2 top-0 h-full w-px -translate-x-1/2 bg-slate-200 transition-colors group-hover:bg-[#007aff] group-active:bg-[#007aff]" />
-                    </button>
-                  </div>
-                  <div className="relative min-w-0 pr-3">
-                    <span>時刻</span>
-                    <button
-                      type="button"
-                      onPointerDown={(event) =>
-                        handleTranscriptColumnResizePointerDown("time", event)
-                      }
-                      onPointerMove={handleTranscriptColumnResizePointerMove}
-                      onPointerUp={handleTranscriptColumnResizePointerUp}
-                      onPointerCancel={handleTranscriptColumnResizePointerUp}
-                      className="group absolute -right-2 top-0 h-full w-4 cursor-col-resize touch-none"
-                      aria-label="時刻列の幅を変更"
-                    >
-                      <span className="absolute left-1/2 top-0 h-full w-px -translate-x-1/2 bg-slate-200 transition-colors group-hover:bg-[#007aff] group-active:bg-[#007aff]" />
-                    </button>
-                  </div>
-                  <div className="relative min-w-0 pr-3">
-                    <div className="flex items-center gap-2">
-                      <span>文字起こし</span>
-                      {!showLlmRefined ? (
-                        <button
-                          type="button"
-                          onClick={() => setShowLlmRefined(true)}
-                          className="rounded-full border border-[#007aff] px-2 py-0.5 text-[10px] font-bold text-[#007aff]"
-                          aria-label="LLM整形列を表示"
-                        >
-                          整形列
-                        </button>
-                      ) : null}
-                    </div>
-                    {showLlmRefined ? (
-                      <button
-                        type="button"
-                        onPointerDown={(event) =>
-                          handleTranscriptColumnResizePointerDown("transcript", event)
-                        }
-                        onPointerMove={handleTranscriptColumnResizePointerMove}
-                        onPointerUp={handleTranscriptColumnResizePointerUp}
-                        onPointerCancel={handleTranscriptColumnResizePointerUp}
-                        className="group absolute -right-2 top-0 h-full w-4 cursor-col-resize touch-none"
-                        aria-label="文字起こし列の幅を変更"
-                      >
-                        <span className="absolute left-1/2 top-0 h-full w-px -translate-x-1/2 bg-slate-200 transition-colors group-hover:bg-[#007aff] group-active:bg-[#007aff]" />
-                      </button>
-                    ) : null}
-                  </div>
-                  {showLlmRefined ? (
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span>LLM整形</span>
-                        <button
-                          type="button"
-                          onClick={() => setShowLlmRefined((current) => !current)}
-                          className="relative h-4 w-7 rounded-full bg-[#007aff]"
-                          aria-label="LLM整形列を非表示"
-                        >
-                          <span className="absolute right-0.5 top-0.5 h-3 w-3 rounded-full bg-white" />
-                        </button>
-                      </div>
-                    </div>
-                  ) : null}
+<div className="relative min-w-0 pr-3">
+  <div className="flex items-center gap-2">
+    <span>{"\u8a71\u8005"}</span>
+    <button
+      type="button"
+      onClick={() => setSpeakerEditMode((current) => !current)}
+      className={`inline-flex h-5 w-5 items-center justify-center rounded border transition-colors ${
+        speakerEditMode
+          ? "border-[#007aff] bg-[#007aff]/10 text-[#007aff]"
+          : "border-slate-200 text-slate-400 hover:border-[#007aff] hover:text-[#007aff]"
+      }`}
+      aria-label={"\u8a71\u8005\u540d\u306e\u7de8\u96c6\u3092\u5207\u308a\u66ff\u3048"}
+    >
+      <Pencil className="size-3" />
+    </button>
+  </div>
+  <button
+    type="button"
+    onPointerDown={(event) =>
+      handleTranscriptColumnResizePointerDown("speaker", event)
+    }
+    onPointerMove={handleTranscriptColumnResizePointerMove}
+    onPointerUp={handleTranscriptColumnResizePointerUp}
+    onPointerCancel={handleTranscriptColumnResizePointerUp}
+    className="group absolute -right-2 top-0 h-full w-4 cursor-col-resize touch-none"
+    aria-label={"\u8a71\u8005\u5217\u306e\u5e45\u3092\u5909\u66f4"}
+  >
+    <span className="absolute left-1/2 top-0 h-full w-px -translate-x-1/2 bg-slate-200 transition-colors group-hover:bg-[#007aff] group-active:bg-[#007aff]" />
+  </button>
+</div>
+<div className="relative min-w-0 pr-3">
+  <span>{"\u6642\u523b"}</span>
+  <button
+    type="button"
+    onPointerDown={(event) =>
+      handleTranscriptColumnResizePointerDown("time", event)
+    }
+    onPointerMove={handleTranscriptColumnResizePointerMove}
+    onPointerUp={handleTranscriptColumnResizePointerUp}
+    onPointerCancel={handleTranscriptColumnResizePointerUp}
+    className="group absolute -right-2 top-0 h-full w-4 cursor-col-resize touch-none"
+    aria-label={"\u6642\u523b\u5217\u306e\u5e45\u3092\u5909\u66f4"}
+  >
+    <span className="absolute left-1/2 top-0 h-full w-px -translate-x-1/2 bg-slate-200 transition-colors group-hover:bg-[#007aff] group-active:bg-[#007aff]" />
+  </button>
+</div>
+{showRawTranscript ? (
+  <div className="relative min-w-0 pr-3">
+    <div className="flex items-center gap-2">
+      <span>{"\u6587\u5b57\u8d77\u3053\u3057"}</span>
+      <button
+        type="button"
+        onClick={() => {
+          if (!showLlmRefined) {
+            return;
+          }
+          setShowRawTranscript(false);
+        }}
+        disabled={!showLlmRefined}
+        className={`relative h-4 w-7 rounded-full transition-colors ${
+          showRawTranscript ? "bg-[#007aff]" : "bg-slate-300"
+        } ${!showLlmRefined ? "cursor-not-allowed opacity-40" : ""}`}
+        aria-label={"\u6587\u5b57\u8d77\u3053\u3057\u5217\u306e\u8868\u793a\u3092\u5207\u308a\u66ff\u3048"}
+      >
+        <span className="absolute right-0.5 top-0.5 h-3 w-3 rounded-full bg-white" />
+      </button>
+    </div>
+    <button
+      type="button"
+      onPointerDown={(event) =>
+        handleTranscriptColumnResizePointerDown("transcript", event)
+      }
+      onPointerMove={handleTranscriptColumnResizePointerMove}
+      onPointerUp={handleTranscriptColumnResizePointerUp}
+      onPointerCancel={handleTranscriptColumnResizePointerUp}
+      className="group absolute -right-2 top-0 h-full w-4 cursor-col-resize touch-none"
+      aria-label={"\u6587\u5b57\u8d77\u3053\u3057\u5217\u306e\u5e45\u3092\u5909\u66f4"}
+    >
+      <span className="absolute left-1/2 top-0 h-full w-px -translate-x-1/2 bg-slate-200 transition-colors group-hover:bg-[#007aff] group-active:bg-[#007aff]" />
+    </button>
+  </div>
+) : null}
+{showLlmRefined ? (
+  <div className="min-w-0">
+    <div className="flex items-center gap-2">
+      <span>{"LLM\u6574\u5f62"}</span>
+      <button
+        type="button"
+        onClick={() => {
+          if (!showRawTranscript) {
+            return;
+          }
+          setShowLlmRefined(false);
+        }}
+        disabled={!showRawTranscript}
+        className={`relative h-4 w-7 rounded-full transition-colors ${
+          showLlmRefined ? "bg-[#007aff]" : "bg-slate-300"
+        } ${!showRawTranscript ? "cursor-not-allowed opacity-40" : ""}`}
+        aria-label={"LLM\u6574\u5f62\u5217\u306e\u8868\u793a\u3092\u5207\u308a\u66ff\u3048"}
+      >
+        <span className="absolute right-0.5 top-0.5 h-3 w-3 rounded-full bg-white" />
+      </button>
+      {!showRawTranscript ? (
+        <button
+          type="button"
+          onClick={() => setShowRawTranscript(true)}
+          className="rounded-full border border-[#007aff] px-2 py-0.5 text-[10px] font-bold text-[#007aff]"
+          aria-label={"\u6587\u5b57\u8d77\u3053\u3057\u5217\u3092\u518d\u8868\u793a"}
+        >
+          {"\u6587\u5b57\u8d77\u3053\u3057\u3092\u8868\u793a"}
+        </button>
+      ) : null}
+    </div>
+  </div>
+) : (
+  <div className="min-w-0">
+    <button
+      type="button"
+      onClick={() => setShowLlmRefined(true)}
+      className="rounded-full border border-[#007aff] px-2 py-0.5 text-[10px] font-bold text-[#007aff]"
+      aria-label={"LLM\u6574\u5f62\u5217\u3092\u518d\u8868\u793a"}
+    >
+      {"LLM\u6574\u5f62\u3092\u8868\u793a"}
+    </button>
+  </div>
+)}
                 </div>
 
                 <div>
@@ -3096,16 +3177,18 @@ function App() {
                                 >
                                   {segment.speakerLabel}
                                 </p>
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    renameSpeaker(segment.speakerIndex, segment.speakerLabel)
-                                  }
-                                  className="inline-flex h-5 w-5 items-center justify-center rounded text-slate-300 transition-colors hover:bg-slate-100 hover:text-slate-500"
-                                  aria-label={`${segment.speakerLabel} を変更`}
-                                >
-                                  <Pencil className="size-3" />
-                                </button>
+                                {speakerEditMode ? (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      renameSpeaker(segment.speakerIndex, segment.speakerLabel)
+                                    }
+                                    className="inline-flex h-5 w-5 items-center justify-center rounded text-slate-300 transition-colors hover:bg-slate-100 hover:text-slate-500"
+                                    aria-label={`${segment.speakerLabel} \u3092\u7de8\u96c6`}
+                                  >
+                                    <Pencil className="size-3" />
+                                  </button>
+                                ) : null}
                               </div>
                               <span className="app-mono text-[11px] font-semibold text-slate-500 lg:hidden">
                                 {formatLongClock(segment.startedAt)}
@@ -3143,27 +3226,26 @@ function App() {
                                 ) : null}
                               </div>
                             </div>
-
-                            <div
-                              className="mt-1 min-w-0 rounded-xl px-3 py-2 lg:mt-0"
-                            >
-                              <textarea
-                                value={segment.text}
-                                rows={Math.max(
-                                  1,
-                                  Math.ceil(Math.max(segment.text.length, 1) / 340),
-                                )}
-                                onChange={(event) =>
-                                  onSegmentEdit(segment.id, event.target.value)
-                                }
-                                className="w-full resize-none border-0 bg-transparent px-0 py-0 text-slate-900 outline-none transition focus:bg-white/50"
-                                style={{
-                                  fontSize: "11px",
-                                  fontWeight: 600,
-                                  lineHeight: "16px",
-                                }}
-                              />
-                            </div>
+                            {showRawTranscript ? (
+                              <div className="mt-1 min-w-0 rounded-xl px-3 py-2 lg:mt-0">
+                                <textarea
+                                  value={segment.text}
+                                  rows={Math.max(
+                                    1,
+                                    Math.ceil(Math.max(segment.text.length, 1) / 340),
+                                  )}
+                                  onChange={(event) =>
+                                    onSegmentEdit(segment.id, event.target.value)
+                                  }
+                                  className="w-full resize-none border-0 bg-transparent px-0 py-0 text-slate-900 outline-none transition focus:bg-white/50"
+                                  style={{
+                                    fontSize: "11px",
+                                    fontWeight: 600,
+                                    lineHeight: "16px",
+                                  }}
+                                />
+                              </div>
+                            ) : null}
 
                             {showLlmRefined ? (
                               <div className="mt-2 min-w-0 rounded-xl bg-slate-50 px-3 py-2 transition-all duration-300 lg:mt-0">
@@ -3312,14 +3394,27 @@ function App() {
                   selectedSessionId && void generateMinutesForSession(selectedSessionId)
                 }
                 disabled={selectedMinutesProcessing}
-                className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-[#007aff] bg-white px-4 text-[11px] font-semibold text-[#007aff] transition-colors hover:bg-[#007aff]/10 disabled:cursor-not-allowed disabled:opacity-40"
+                className="relative inline-flex h-10 overflow-hidden rounded-lg border border-[#007aff] bg-white px-4 text-[11px] font-semibold text-[#007aff] transition-colors hover:bg-[#007aff]/10 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {selectedMinutesProcessing ? (
-                  <LoaderCircle className="size-4 animate-spin" />
-                ) : (
-                  <FileText className="size-4" />
-                )}
-                文字起こし整形
+                  <span
+                    aria-hidden
+                    className="absolute inset-y-0 left-0 bg-[#007aff]/14 transition-[width] duration-300"
+                    style={{
+                      width: `${Math.max(0, Math.min(100, selectedMinutesProgress))}%`,
+                    }}
+                  />
+                ) : null}
+                <span className="relative z-10 inline-flex items-center justify-center gap-2">
+                  {selectedMinutesProcessing ? (
+                    <LoaderCircle className="size-4 animate-spin" />
+                  ) : (
+                    <FileText className="size-4" />
+                  )}
+{selectedMinutesProcessing
+  ? `文字起こし整形 ${Math.max(0, Math.min(100, selectedMinutesProgress))}%`
+  : "文字起こし整形"}
+                </span>
               </button>
             ) : null}
 
@@ -4215,19 +4310,21 @@ function App() {
           <button
             type="button"
             onClick={() => {
-              toggleSidebarRecordSelection(sidebarContextRecord.id);
+if (sidebarSelectionMode) {
+  exitSidebarSelectionMode();
+} else {
+  setSidebarSelectionMode(true);
+  setSidebarSelectedRecordIds([sidebarContextRecord.id]);
+  lastSidebarSelectedRecordIdRef.current = sidebarContextRecord.id;
+}
               setSidebarContextMenu(null);
             }}
             className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-slate-600 transition-colors hover:bg-slate-50 hover:text-slate-900"
           >
-            {sidebarContextRecordIsSelected ? (
-              <Check className="size-4" />
-            ) : (
-              <Square className="size-4" />
-            )}
-            {sidebarContextRecordIsSelected ? "Remove From Selection" : "Add To Selection"}
+            {sidebarSelectionMode ? <X className="size-4" /> : <Square className="size-4" />}
+            {sidebarSelectionMode ? "選択を終了" : "選択"}
           </button>
-          {validSidebarSelectedRecordIds.length > 0 ? (
+          {sidebarSelectionMode && validSidebarSelectedRecordIds.length > 0 ? (
             <button
               type="button"
               onClick={() => {
@@ -4238,7 +4335,7 @@ function App() {
               className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-slate-600 transition-colors hover:bg-slate-50 hover:text-slate-900"
             >
               <X className="size-4" />
-              Clear Selection
+              選択解除
             </button>
           ) : null}
           {sidebarContextRecord.audioUrl ? (

@@ -106,6 +106,7 @@ export interface SessionSummary {
   title: string;
   audioUrl?: string | null;
   minutesStatus?: "idle" | "processing" | "complete" | "error";
+  minutesProgress?: number;
   minutesUpdatedAt?: string | null;
   minutesModel?: string | null;
   minutesError?: string | null;

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -282,17 +283,35 @@ def _preserve_realtime_llm_columns(
 async def _refine_timeline_blocks(
     llm_settings: LlmSettings,
     segments: list[TranscriptSegment],
+    *,
+    progress_callback: Callable[[int], None] | None = None,
+    progress_start: int = 45,
+    progress_end: int = 80,
 ) -> list[str]:
     if not llm_settings.enabled or llm_settings.provider != "ollama":
-        return [_block_to_timeline_text(block) for block in _blocks(segments, TIMELINE_BLOCK_SIZE)]
+        if progress_callback is not None:
+            progress_callback(progress_end)
+        return [
+            _block_to_timeline_text(block)
+            for block in _blocks(segments, TIMELINE_BLOCK_SIZE)
+        ]
 
     client = OllamaClient(llm_settings)
     refined_blocks: list[str] = []
-    for block in _blocks(segments, TIMELINE_BLOCK_SIZE):
+    blocks = _blocks(segments, TIMELINE_BLOCK_SIZE)
+    if not blocks:
+        if progress_callback is not None:
+            progress_callback(progress_end)
+        return []
+
+    for index, block in enumerate(blocks, start=1):
         target = _block_to_timeline_text(block)
         previous = "\n\n".join(refined_blocks[-2:])
         result = await client.refine_timeline_block(previous=previous, target=target)
         refined_blocks.append(result.text.strip() or target)
+        if progress_callback is not None:
+            span = max(0, progress_end - progress_start)
+            progress_callback(progress_start + round((index / len(blocks)) * span))
     return refined_blocks
 
 
@@ -308,6 +327,7 @@ async def create_minutes_for_session(
     session_id: str,
     transcription_settings: TranscriptionSettings,
     llm_settings: LlmSettings,
+    progress_callback: Callable[[int], None] | None = None,
 ) -> tuple[str, list[TranscriptSegment], str | None]:
     detail = store.get_session(session_id)
     if detail is None:
@@ -320,6 +340,8 @@ async def create_minutes_for_session(
         raise ValueError("Recording audio file was not found.")
 
     audio = _load_recording_audio(audio_path)
+    if progress_callback is not None:
+        progress_callback(10)
     segments = await asyncio.to_thread(
         _transcribe_batch_segments,
         models_root=models_root,
@@ -327,9 +349,17 @@ async def create_minutes_for_session(
         transcription_settings=transcription_settings,
         audio=audio,
     )
+    if progress_callback is not None:
+        progress_callback(40)
 
     existing_segments = detail.segments
-    refined_blocks = await _refine_timeline_blocks(llm_settings, segments)
+    refined_blocks = await _refine_timeline_blocks(
+        llm_settings,
+        segments,
+        progress_callback=progress_callback,
+        progress_start=45,
+        progress_end=80,
+    )
     segments = _apply_refined_blocks_to_transcript_segments(segments, refined_blocks)
     segments = _preserve_realtime_llm_columns(segments, existing_segments)
     refined_timeline = _segments_to_timeline_text(segments)
@@ -340,13 +370,19 @@ async def create_minutes_for_session(
     )
 
     if not llm_settings.enabled or llm_settings.provider != "ollama":
+        if progress_callback is not None:
+            progress_callback(100)
         return fallback_markdown, segments, None
 
     summary_settings = _minutes_summary_settings(llm_settings)
+    if progress_callback is not None:
+        progress_callback(88)
     result = await OllamaClient(summary_settings).refine_minutes(
         title=detail.title,
         transcript=refined_timeline,
     )
+    if progress_callback is not None:
+        progress_callback(98)
     markdown = _append_timestamped_clean_transcript(
         result.text.strip()
         or _fallback_minutes_body(title=detail.title, body=refined_body),

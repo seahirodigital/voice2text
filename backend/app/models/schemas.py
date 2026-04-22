@@ -150,6 +150,7 @@ class SessionSummary(BaseModel):
     minutes_status: Literal["idle", "processing", "complete", "error"] = Field(
         default="idle", alias="minutesStatus"
     )
+    minutes_progress: int = Field(default=0, alias="minutesProgress", ge=0, le=100)
     minutes_updated_at: str | None = Field(default=None, alias="minutesUpdatedAt")
     minutes_model: str | None = Field(default=None, alias="minutesModel")
     minutes_error: str | None = Field(default=None, alias="minutesError")
