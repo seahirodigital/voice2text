@@ -10,6 +10,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import numpy as np
+import httpx
 from moonshine_voice import ModelArch, Transcriber, TranscriptEventListener
 from moonshine_voice.download import get_model_for_language
 from moonshine_voice.transcriber import (
@@ -27,10 +28,17 @@ from app.models.schemas import (
     TranscriptSegment,
     utc_now_iso,
 )
-from app.services.ollama_client import OllamaClient
+from app.services.groq_client import GroqClient, pcm16_wav_bytes
+from app.services.refinement_client import (
+    create_refinement_client,
+    refinement_enabled,
+)
 from app.services.session_store import SessionStore
 from app.services.settings_service import MODEL_PRESET_CANDIDATES
 from app.services.speaker_labeler import SpeakerLabeler
+
+GROQ_MIN_LIVE_CHUNK_SECONDS = 1.0
+GROQ_FINAL_FLUSH_MIN_SECONDS = 0.25
 
 
 def _format_session_title(started_at: str) -> str:
@@ -77,7 +85,9 @@ class SessionContext:
     session_id: str
     title: str
     language: str
+    realtime_transcription_engine: str
     model_preset: str
+    groq_transcription_model: str
     browser_sample_rate: int
     channels: int
     device_label: str
@@ -134,6 +144,13 @@ class LiveTranscriptionSession:
         self.llm_requested_at: dict[int, float] = {}
         self.llm_worker_future = None
         self.llm_wake_event = asyncio.Event()
+        self.groq_worker_future = None
+        self.groq_wake_event = asyncio.Event()
+        self.groq_processed_offset = 0
+        self.groq_line_id = 0
+        self.groq_error_reported = False
+        self.moonshine_line_id_offset = 0
+        self.moonshine_time_offset = 0.0
         self.active = False
         self.paused = False
         self.recognition_stopped = False
@@ -145,20 +162,22 @@ class LiveTranscriptionSession:
         if self.active:
             raise RuntimeError("A live transcription session is already active.")
 
-        model_path, model_arch, resolved_preset = _resolve_model(
-            payload.language, payload.model_preset, self.models_root
-        )
-        options: dict[str, str] = {}
-        if self.enable_word_timestamps:
-            options["word_timestamps"] = "true"
-
+        resolved_preset = payload.model_preset
+        model_path: str | None = None
+        model_arch: ModelArch | None = None
+        if payload.realtime_transcription_engine == "moonshine":
+            model_path, model_arch, resolved_preset = _resolve_model(
+                payload.language, payload.model_preset, self.models_root
+            )
         started_at = utc_now_iso()
         title = _format_session_title(started_at)
         self.context = SessionContext(
             session_id=f"session-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:8]}",
             title=title,
             language=payload.language,
+            realtime_transcription_engine=payload.realtime_transcription_engine,
             model_preset=resolved_preset,
+            groq_transcription_model=payload.groq_transcription_model,
             browser_sample_rate=payload.browser_sample_rate,
             channels=payload.channels,
             device_label=payload.device_label,
@@ -171,21 +190,27 @@ class LiveTranscriptionSession:
         self.llm_pending_line_ids = set()
         self.llm_requested_at = {}
         self._cancel_llm_tasks()
+        self._cancel_groq_tasks()
+        self.groq_processed_offset = 0
+        self.groq_line_id = 0
+        self.groq_error_reported = False
+        self.moonshine_line_id_offset = 0
+        self.moonshine_time_offset = 0.0
         self.recognition_stopped = False
         if payload.llm_settings is not None:
             self.llm_settings = payload.llm_settings
 
-        self.transcriber = Transcriber(
-            model_path=model_path,
-            model_arch=model_arch,
-            update_interval=self.update_interval_ms / 1000.0,
-            options=options or None,
-        )
-        self.listener = LiveSessionListener(self)
-        self.transcriber.add_listener(self.listener)
-        self.transcriber.start()
-        self.active = True
         self.paused = False
+        if payload.realtime_transcription_engine == "moonshine":
+            if model_path is None or model_arch is None:
+                raise ValueError("Moonshine model could not be resolved.")
+            self._start_moonshine_transcriber(model_path, model_arch)
+        else:
+            self.transcriber = None
+            self.listener = None
+        self.active = True
+        if payload.realtime_transcription_engine == "groq":
+            self._ensure_groq_worker()
 
         started_payload = {
             "type": "started",
@@ -194,7 +219,9 @@ class LiveTranscriptionSession:
                 "title": self.context.title,
                 "createdAt": self.context.started_at,
                 "language": self.context.language,
+                "realtimeTranscriptionEngine": self.context.realtime_transcription_engine,
                 "modelPreset": self.context.model_preset,
+                "groqTranscriptionModel": self.context.groq_transcription_model,
                 "deviceLabel": self.context.device_label,
             },
         }
@@ -226,6 +253,30 @@ class LiveTranscriptionSession:
                 ):
                     self._schedule_llm_refinement(line_id)
 
+    def _moonshine_options(self) -> dict[str, str] | None:
+        options: dict[str, str] = {}
+        if self.enable_word_timestamps:
+            options["word_timestamps"] = "true"
+        return options or None
+
+    def _start_moonshine_transcriber(
+        self,
+        model_path: str,
+        model_arch: ModelArch,
+    ) -> None:
+        if self.transcriber is not None:
+            self.transcriber.stop()
+            self.transcriber.close()
+        self.transcriber = Transcriber(
+            model_path=model_path,
+            model_arch=model_arch,
+            update_interval=self.update_interval_ms / 1000.0,
+            options=self._moonshine_options(),
+        )
+        self.listener = LiveSessionListener(self)
+        self.transcriber.add_listener(self.listener)
+        self.transcriber.start()
+
     def stop_recognition(self) -> None:
         if not self.active or self.recognition_stopped:
             return
@@ -233,6 +284,7 @@ class LiveTranscriptionSession:
         self.recognition_stopped = True
         pending_line_ids = set(self.llm_pending_line_ids)
         self._cancel_llm_tasks()
+        self._cancel_groq_tasks()
         for line_id in pending_line_ids:
             segment = self.segments.get(line_id)
             if segment is None:
@@ -259,7 +311,15 @@ class LiveTranscriptionSession:
             return
 
         self.raw_audio.extend(frame_bytes)
-        if self.recognition_stopped or self.transcriber is None:
+        if self.recognition_stopped:
+            return
+        if self.context.realtime_transcription_engine == "groq":
+            self._wake_groq_worker()
+            return
+        self._ingest_moonshine_audio(frame_bytes)
+
+    def _ingest_moonshine_audio(self, frame_bytes: bytes) -> None:
+        if self.context is None or self.transcriber is None:
             return
         pcm = np.frombuffer(frame_bytes, dtype="<i2").astype(np.float32) / 32768.0
         self.transcriber.add_audio(
@@ -271,27 +331,29 @@ class LiveTranscriptionSession:
         if self.context is None or self.recognition_stopped:
             return
 
+        effective_line_id = int(line.line_id) + self.moonshine_line_id_offset
         moonshine_index = line.speaker_index if bool(line.has_speaker_id) else None
         speaker_label, speaker_index, speaker_source = self.labeler.assign(
-            line.line_id,
+            effective_line_id,
             line.audio_data,
             16000,
             moonshine_index,
         )
 
-        existing_segment = self.segments.get(line.line_id)
+        existing_segment = self.segments.get(effective_line_id)
         segment = TranscriptSegment(
-            id=f"line-{line.line_id}",
-            lineId=line.line_id,
+            id=f"line-{effective_line_id}",
+            lineId=effective_line_id,
             text=line.text,
             speakerLabel=speaker_label,
             speakerIndex=speaker_index,
             speakerSource=speaker_source,
-            startedAt=round(float(line.start_time), 3),
+            startedAt=round(float(line.start_time) + self.moonshine_time_offset, 3),
             duration=round(float(line.duration), 3),
             isComplete=bool(line.is_complete),
             latencyMs=int(line.last_transcription_latency_ms),
             updatedAt=utc_now_iso(),
+            transcriptionModel=self._moonshine_transcription_model_label(),
             llmText=existing_segment.llm_text if existing_segment else None,
             llmStatus=existing_segment.llm_status if existing_segment else "idle",
             llmModel=existing_segment.llm_model if existing_segment else None,
@@ -306,7 +368,7 @@ class LiveTranscriptionSession:
                 existing_segment.llm_block_end_line_id if existing_segment else None
             ),
         )
-        self.segments[line.line_id] = segment
+        self.segments[effective_line_id] = segment
         self._put_nowait(
             {
                 "type": event_type,
@@ -314,7 +376,7 @@ class LiveTranscriptionSession:
             }
         )
         if event_type == "line_completed" or not self.llm_settings.complete_only:
-            self._schedule_llm_refinement(line.line_id)
+            self._schedule_llm_refinement(effective_line_id)
 
     def publish_error(self, message: str) -> None:
         self._put_nowait({"type": "error", "payload": {"message": message}})
@@ -377,12 +439,14 @@ class LiveTranscriptionSession:
         }
         self._put_nowait(payload)
         self.active = False
+        self._cancel_groq_tasks()
         self._cancel_llm_tasks()
         return payload
 
     async def finalize_after_refinement(self) -> dict | None:
         if not self.active or self.context is None:
             return None
+        await self._drain_groq_for_finalize()
         await self._drain_llm_for_finalize()
         return self.finalize()
 
@@ -390,10 +454,225 @@ class LiveTranscriptionSession:
         if not self.active:
             return
         self.finalize()
+        self._cancel_groq_tasks()
         self._cancel_llm_tasks()
 
     def _put_nowait(self, payload: dict) -> None:
         self.loop.call_soon_threadsafe(self.queue.put_nowait, payload)
+
+    def _cancel_groq_tasks(self) -> None:
+        future = self.groq_worker_future
+        if future is not None and not future.done():
+            future.cancel()
+        self.groq_worker_future = None
+        self._wake_groq_worker()
+
+    def _ensure_groq_worker(self) -> None:
+        if not self.active:
+            return
+        if self.groq_worker_future is None or self.groq_worker_future.done():
+            self.groq_worker_future = asyncio.run_coroutine_threadsafe(
+                self._groq_worker_loop(),
+                self.loop,
+            )
+        self._wake_groq_worker()
+
+    def _wake_groq_worker(self) -> None:
+        self.loop.call_soon_threadsafe(self.groq_wake_event.set)
+
+    def _bytes_per_second(self) -> int:
+        if self.context is None:
+            return 0
+        return self.context.browser_sample_rate * self.context.channels * 2
+
+    def _moonshine_transcription_model_label(self) -> str:
+        if self.context is None:
+            return "Moonshine"
+        return f"Moonshine {self.context.model_preset}".strip()
+
+    def _groq_transcription_model_label(self) -> str:
+        if self.context is None:
+            return "Groq"
+        return f"Groq {self.context.groq_transcription_model}".strip()
+
+    @staticmethod
+    def _is_groq_rate_limit_error(exc: Exception) -> bool:
+        return isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429
+
+    def _start_moonshine_fallback(self, start_offset: int, reason: str) -> bool:
+        if self.context is None or self.recognition_stopped:
+            return False
+
+        try:
+            model_path, model_arch, resolved_preset = _resolve_model(
+                self.context.language,
+                self.context.model_preset,
+                self.models_root,
+            )
+        except Exception as exc:
+            self.groq_error_reported = True
+            self.publish_error(
+                f"Groq transcription rate limit was reached, but Moonshine fallback failed: {exc}"
+            )
+            return False
+
+        self.groq_worker_future = None
+        self.context.realtime_transcription_engine = "moonshine"
+        self.context.model_preset = resolved_preset
+        self.moonshine_line_id_offset = max(self.segments.keys(), default=-1) + 1
+        bytes_per_second = self._bytes_per_second()
+        self.moonshine_time_offset = (
+            start_offset / bytes_per_second if bytes_per_second else 0.0
+        )
+        self._start_moonshine_transcriber(model_path, model_arch)
+        self._put_nowait(
+            {
+                "type": "transcription_engine_changed",
+                "payload": {
+                    "realtimeTranscriptionEngine": "moonshine",
+                    "modelPreset": resolved_preset,
+                    "transcriptionModel": self._moonshine_transcription_model_label(),
+                    "reason": reason,
+                },
+            }
+        )
+        return True
+
+    def _take_groq_chunk(
+        self,
+        *,
+        final: bool,
+    ) -> tuple[int, int, bytes] | None:
+        if self.context is None:
+            return None
+
+        bytes_per_second = self._bytes_per_second()
+        if bytes_per_second <= 0:
+            return None
+
+        available = len(self.raw_audio)
+        pending = available - self.groq_processed_offset
+        minimum_seconds = (
+            GROQ_FINAL_FLUSH_MIN_SECONDS
+            if final
+            else max(GROQ_MIN_LIVE_CHUNK_SECONDS, self.update_interval_ms / 1000.0)
+        )
+        if pending < int(bytes_per_second * minimum_seconds):
+            return None
+
+        start_offset = self.groq_processed_offset
+        end_offset = available
+        self.groq_processed_offset = end_offset
+        return start_offset, end_offset, bytes(self.raw_audio[start_offset:end_offset])
+
+    async def _groq_worker_loop(self) -> None:
+        try:
+            while self.active and not self.recognition_stopped:
+                if self.context is None or self.context.realtime_transcription_engine != "groq":
+                    return
+                if self.groq_error_reported:
+                    return
+
+                self.groq_wake_event.clear()
+                chunk = self._take_groq_chunk(final=False)
+                if chunk is None:
+                    try:
+                        await asyncio.wait_for(self.groq_wake_event.wait(), timeout=0.5)
+                    except asyncio.TimeoutError:
+                        pass
+                    continue
+                await self._transcribe_groq_chunk(*chunk)
+        except asyncio.CancelledError:
+            return
+
+    async def _drain_groq_for_finalize(self) -> None:
+        if (
+            self.context is None
+            or self.context.realtime_transcription_engine != "groq"
+            or self.groq_error_reported
+        ):
+            return
+
+        future = self.groq_worker_future
+        if future is not None and not future.done():
+            future.cancel()
+        self.groq_worker_future = None
+
+        chunk = self._take_groq_chunk(final=True)
+        if chunk is not None:
+            await self._transcribe_groq_chunk(*chunk)
+
+    async def _transcribe_groq_chunk(
+        self,
+        start_offset: int,
+        end_offset: int,
+        frame_bytes: bytes,
+    ) -> None:
+        if self.context is None:
+            return
+
+        try:
+            bytes_per_second = self._bytes_per_second()
+            wav_bytes = pcm16_wav_bytes(
+                frame_bytes,
+                sample_rate=self.context.browser_sample_rate,
+                channels=self.context.channels,
+            )
+            result = await GroqClient().transcribe_wav(
+                wav_bytes=wav_bytes,
+                filename=f"{self.context.session_id}-{self.groq_line_id}.wav",
+                model=self.context.groq_transcription_model,
+                language=self.context.language,
+            )
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            if self._is_groq_rate_limit_error(exc):
+                if self._start_moonshine_fallback(start_offset, str(exc)):
+                    self._ingest_moonshine_audio(frame_bytes)
+                return
+            self.groq_error_reported = True
+            self.publish_error(f"Groq transcription failed: {exc}")
+            return
+
+        text = result.text.strip()
+        if not text:
+            return
+
+        previous_segment = self.segments.get(self.groq_line_id - 1)
+        if previous_segment and self._too_similar(previous_segment.text, text):
+            return
+
+        line_id = self.groq_line_id
+        self.groq_line_id += 1
+        start_seconds = start_offset / bytes_per_second if bytes_per_second else 0.0
+        duration_seconds = (
+            (end_offset - start_offset) / bytes_per_second
+            if bytes_per_second
+            else 0.0
+        )
+        segment = TranscriptSegment(
+            id=f"groq-line-{line_id}",
+            lineId=line_id,
+            text=text,
+            speakerLabel="Audio",
+            speakerIndex=0,
+            speakerSource="groq",
+            startedAt=round(start_seconds, 3),
+            duration=round(duration_seconds, 3),
+            isComplete=True,
+            latencyMs=result.latency_ms,
+            updatedAt=utc_now_iso(),
+            transcriptionModel=self._groq_transcription_model_label(),
+        )
+        self.segments[line_id] = segment
+        self._put_nowait(
+            {
+                "type": "line_completed",
+                "payload": segment.model_dump(by_alias=True),
+            }
+        )
+        self._schedule_llm_refinement(line_id)
 
     def _cancel_llm_tasks(self) -> None:
         self.llm_pending_line_ids.clear()
@@ -410,8 +689,7 @@ class LiveTranscriptionSession:
         if (
             not self.active
             or self.recognition_stopped
-            or not settings.enabled
-            or settings.provider != "ollama"
+            or not refinement_enabled(settings)
             or segment is None
             or not segment.text.strip()
             or (settings.complete_only and not segment.is_complete)
@@ -458,7 +736,7 @@ class LiveTranscriptionSession:
 
     async def _drain_llm_for_finalize(self) -> None:
         settings = self.llm_settings.model_copy(deep=True)
-        if not settings.enabled or settings.provider != "ollama":
+        if not refinement_enabled(settings):
             return
 
         future = self.llm_worker_future
@@ -498,7 +776,7 @@ class LiveTranscriptionSession:
         try:
             while self.active:
                 settings = self.llm_settings.model_copy(deep=True)
-                if not settings.enabled or settings.provider != "ollama":
+                if not refinement_enabled(settings):
                     return
 
                 self.llm_wake_event.clear()
@@ -594,7 +872,7 @@ class LiveTranscriptionSession:
                 settings.context_before_lines,
                 settings.context_after_lines,
             )
-            result = await OllamaClient(settings).refine(context)
+            result = await create_refinement_client(settings).refine(context)
 
             if (
                 not self.active

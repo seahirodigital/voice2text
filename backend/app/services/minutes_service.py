@@ -10,13 +10,23 @@ import soundfile as sf
 from scipy.signal import resample_poly
 from moonshine_voice import Transcriber
 
-from app.models.schemas import LlmSettings, TranscriptionSettings, TranscriptSegment, utc_now_iso
+from app.models.schemas import (
+    LlmSettings,
+    TranscriptionSettings,
+    TranscriptSegment,
+    utc_now_iso,
+)
+from app.services.groq_client import (
+    GroqClient,
+    GroqTranscriptionResult,
+    pcm16_wav_bytes,
+)
 from app.services.live_session import _resolve_model
-from app.services.ollama_client import OllamaClient
+from app.services.refinement_client import create_refinement_client, refinement_enabled
 from app.services.session_store import TARGET_RECORDING_SAMPLE_RATE, SessionStore
 
 TIMELINE_BLOCK_SIZE = 6
-MINUTES_SUMMARY_MODEL = "gemma4:e4b"
+OLLAMA_MINUTES_SUMMARY_MODEL = "gemma4:e4b"
 TIMESTAMPED_LINE_RE = re.compile(
     r"^\s*(?:\[(?P<bracket>\d{2}:\d{2}:\d{2})\]|"
     r"(?P<plain>\d{2}:\d{2}:\d{2}))\s*(?P<text>.+?)\s*$"
@@ -35,7 +45,11 @@ def _load_recording_audio(audio_path: Path) -> np.ndarray:
     return np.clip(mono.astype(np.float32), -1.0, 1.0)
 
 
-def _transcript_to_segments(transcript) -> list[TranscriptSegment]:
+def _transcript_to_segments(
+    transcript,
+    *,
+    transcription_model: str | None = None,
+) -> list[TranscriptSegment]:
     segments: list[TranscriptSegment] = []
     now = utc_now_iso()
     for index, line in enumerate(getattr(transcript, "lines", [])):
@@ -56,6 +70,7 @@ def _transcript_to_segments(transcript) -> list[TranscriptSegment]:
                 isComplete=True,
                 latencyMs=int(getattr(line, "last_transcription_latency_ms", 0)),
                 updatedAt=now,
+                transcriptionModel=transcription_model,
             )
         )
     return segments
@@ -121,6 +136,7 @@ def _transcribe_faster_whisper_audio(
                 isComplete=True,
                 latencyMs=0,
                 updatedAt=now,
+                transcriptionModel=f"Faster Whisper {model_name}",
             )
         )
     return segments
@@ -133,12 +149,101 @@ def _transcribe_moonshine_segments(
     model_preset: str,
     audio: np.ndarray,
 ) -> list[TranscriptSegment]:
-    model_path, model_arch, _ = _resolve_model(language, model_preset, models_root)
+    model_path, model_arch, resolved_preset = _resolve_model(
+        language,
+        model_preset,
+        models_root,
+    )
     transcript = _transcribe_audio(model_path, model_arch, audio)
-    return _transcript_to_segments(transcript)
+    return _transcript_to_segments(
+        transcript,
+        transcription_model=f"Moonshine {resolved_preset}",
+    )
 
 
-def _transcribe_batch_segments(
+def _audio_to_wav_bytes(audio: np.ndarray) -> bytes:
+    pcm16 = (np.clip(audio, -1.0, 1.0) * 32767.0).astype("<i2")
+    return pcm16_wav_bytes(
+        pcm16.tobytes(),
+        sample_rate=TARGET_RECORDING_SAMPLE_RATE,
+        channels=1,
+    )
+
+
+def _groq_transcription_to_segments(
+    result: GroqTranscriptionResult,
+    *,
+    model_name: str,
+    audio_duration_seconds: float,
+) -> list[TranscriptSegment]:
+    now = utc_now_iso()
+    segments: list[TranscriptSegment] = []
+    source_segments = result.segments
+    if source_segments:
+        for index, segment in enumerate(source_segments):
+            duration = max(0.0, segment.end - segment.start)
+            segments.append(
+                TranscriptSegment(
+                    id=f"groq-line-{index}",
+                    lineId=index,
+                    text=segment.text,
+                    speakerLabel="Audio",
+                    speakerIndex=0,
+                    speakerSource="groq",
+                    startedAt=round(segment.start, 3),
+                    duration=round(duration, 3),
+                    isComplete=True,
+                    latencyMs=result.latency_ms,
+                    updatedAt=now,
+                    transcriptionModel=f"Groq {model_name}",
+                )
+            )
+        return segments
+
+    text = result.text.strip()
+    if not text:
+        return []
+    return [
+        TranscriptSegment(
+            id="groq-line-0",
+            lineId=0,
+            text=text,
+            speakerLabel="Audio",
+            speakerIndex=0,
+            speakerSource="groq",
+            startedAt=0.0,
+            duration=round(max(0.0, audio_duration_seconds), 3),
+            isComplete=True,
+            latencyMs=result.latency_ms,
+            updatedAt=now,
+            transcriptionModel=f"Groq {model_name}",
+        )
+    ]
+
+
+async def _transcribe_groq_segments(
+    *,
+    transcription_settings: TranscriptionSettings,
+    audio: np.ndarray,
+) -> list[TranscriptSegment]:
+    model_name = transcription_settings.batch_groq_transcription_model
+    result = await GroqClient().transcribe_wav(
+        wav_bytes=_audio_to_wav_bytes(audio),
+        filename="batch-transcription.wav",
+        model=model_name,
+        language=transcription_settings.language,
+        response_format="verbose_json",
+        timestamp_granularities=["segment"],
+        timeout_seconds=300.0,
+    )
+    return _groq_transcription_to_segments(
+        result,
+        model_name=model_name,
+        audio_duration_seconds=len(audio) / TARGET_RECORDING_SAMPLE_RATE,
+    )
+
+
+async def _transcribe_batch_segments(
     *,
     models_root: Path,
     faster_whisper_models_root: Path,
@@ -146,14 +251,22 @@ def _transcribe_batch_segments(
     audio: np.ndarray,
 ) -> list[TranscriptSegment]:
     if transcription_settings.batch_transcription_engine == "moonshine":
-        return _transcribe_moonshine_segments(
+        return await asyncio.to_thread(
+            _transcribe_moonshine_segments,
             models_root=models_root,
             language=transcription_settings.language,
             model_preset=transcription_settings.batch_moonshine_model_preset,
             audio=audio,
         )
 
-    return _transcribe_faster_whisper_audio(
+    if transcription_settings.batch_transcription_engine == "groq":
+        return await _transcribe_groq_segments(
+            transcription_settings=transcription_settings,
+            audio=audio,
+        )
+
+    return await asyncio.to_thread(
+        _transcribe_faster_whisper_audio,
         model_name=transcription_settings.faster_whisper_model,
         models_root=faster_whisper_models_root,
         language=transcription_settings.language,
@@ -288,7 +401,7 @@ async def _refine_timeline_blocks(
     progress_start: int = 45,
     progress_end: int = 80,
 ) -> list[str]:
-    if not llm_settings.enabled or llm_settings.provider != "ollama":
+    if not refinement_enabled(llm_settings):
         if progress_callback is not None:
             progress_callback(progress_end)
         return [
@@ -296,7 +409,7 @@ async def _refine_timeline_blocks(
             for block in _blocks(segments, TIMELINE_BLOCK_SIZE)
         ]
 
-    client = OllamaClient(llm_settings)
+    client = create_refinement_client(llm_settings)
     refined_blocks: list[str] = []
     blocks = _blocks(segments, TIMELINE_BLOCK_SIZE)
     if not blocks:
@@ -315,8 +428,19 @@ async def _refine_timeline_blocks(
     return refined_blocks
 
 
-def _minutes_summary_settings(llm_settings: LlmSettings) -> LlmSettings:
-    return llm_settings.model_copy(update={"model": MINUTES_SUMMARY_MODEL})
+def _batch_summary_llm_settings(llm_settings: LlmSettings) -> LlmSettings:
+    return llm_settings.model_copy(
+        update={
+            "provider": llm_settings.batch_summary_provider,
+            "model": llm_settings.batch_summary_model,
+        }
+    )
+
+
+def get_minutes_summary_model(llm_settings: LlmSettings) -> str | None:
+    if not refinement_enabled(llm_settings):
+        return None
+    return _batch_summary_llm_settings(llm_settings).model
 
 
 async def create_minutes_for_session(
@@ -342,8 +466,7 @@ async def create_minutes_for_session(
     audio = _load_recording_audio(audio_path)
     if progress_callback is not None:
         progress_callback(10)
-    segments = await asyncio.to_thread(
-        _transcribe_batch_segments,
+    segments = await _transcribe_batch_segments(
         models_root=models_root,
         faster_whisper_models_root=faster_whisper_models_root,
         transcription_settings=transcription_settings,
@@ -352,16 +475,10 @@ async def create_minutes_for_session(
     if progress_callback is not None:
         progress_callback(40)
 
-    existing_segments = detail.segments
-    refined_blocks = await _refine_timeline_blocks(
-        llm_settings,
-        segments,
-        progress_callback=progress_callback,
-        progress_start=45,
-        progress_end=80,
-    )
-    segments = _apply_refined_blocks_to_transcript_segments(segments, refined_blocks)
-    segments = _preserve_realtime_llm_columns(segments, existing_segments)
+    if progress_callback is not None:
+        progress_callback(80)
+
+    segments = _preserve_realtime_llm_columns(segments, detail.segments)
     refined_timeline = _segments_to_timeline_text(segments)
     refined_body = "\n".join(segment.text for segment in segments if segment.text.strip())
     fallback_markdown = _append_timestamped_clean_transcript(
@@ -369,15 +486,15 @@ async def create_minutes_for_session(
         refined_timeline,
     )
 
-    if not llm_settings.enabled or llm_settings.provider != "ollama":
+    if not refinement_enabled(llm_settings):
         if progress_callback is not None:
             progress_callback(100)
         return fallback_markdown, segments, None
 
-    summary_settings = _minutes_summary_settings(llm_settings)
+    summary_settings = _batch_summary_llm_settings(llm_settings)
     if progress_callback is not None:
         progress_callback(88)
-    result = await OllamaClient(summary_settings).refine_minutes(
+    result = await create_refinement_client(summary_settings).refine_minutes(
         title=detail.title,
         transcript=refined_timeline,
     )

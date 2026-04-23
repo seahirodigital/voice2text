@@ -15,3 +15,5 @@ tmp-pytest/
 .pytest_tmp*/
 LLM/models/
 LLM/logs/
+LLM/.env
+LLM/.env/

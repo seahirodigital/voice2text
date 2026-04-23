@@ -20,7 +20,10 @@ from app.models.schemas import (
     WebSocketEnvelope,
 )
 from app.services.live_session import LiveTranscriptionSession
-from app.services.minutes_service import MINUTES_SUMMARY_MODEL, create_minutes_for_session
+from app.services.minutes_service import (
+    create_minutes_for_session,
+    get_minutes_summary_model,
+)
 from app.services.session_store import SessionStore
 from app.services.settings_service import SettingsService
 
@@ -162,10 +165,12 @@ async def create_session_minutes(session_id: str):
         recordings_root=Path(paths.temp_recordings_root),
     )
     try:
+        llm_settings = settings_service.get_runtime_llm_settings(settings)
+        minutes_model = get_minutes_summary_model(llm_settings)
         progress_detail = store.update_minutes_progress(
             session_id,
             progress=0,
-            minutes_model=MINUTES_SUMMARY_MODEL,
+            minutes_model=minutes_model,
         )
         if progress_detail is None:
             raise HTTPException(status_code=404, detail="Session not found")
@@ -176,11 +181,11 @@ async def create_session_minutes(session_id: str):
             faster_whisper_models_root=Path(paths.faster_whisper_models_root),
             session_id=session_id,
             transcription_settings=settings.transcription,
-            llm_settings=settings_service.get_runtime_llm_settings(settings),
+            llm_settings=llm_settings,
             progress_callback=lambda progress: store.update_minutes_progress(
                 session_id,
                 progress=progress,
-                minutes_model=MINUTES_SUMMARY_MODEL,
+                minutes_model=minutes_model,
             ),
         )
         detail = store.update_minutes(
@@ -199,7 +204,9 @@ async def create_session_minutes(session_id: str):
             session_id,
             minutes_markdown="",
             minutes_segments=None,
-            minutes_model=MINUTES_SUMMARY_MODEL,
+            minutes_model=get_minutes_summary_model(
+                settings_service.get_runtime_llm_settings(settings)
+            ),
             minutes_error=str(exc),
         )
         if detail is None:
@@ -319,7 +326,7 @@ async def transcription_socket(websocket: WebSocket):
             elif envelope.type == "stop_recognition":
                 session.stop_recognition()
             elif envelope.type == "stop_session":
-                session.finalize()
+                await session.finalize_after_refinement()
             else:
                 await websocket.send_json(
                     {

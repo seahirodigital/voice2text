@@ -19,7 +19,19 @@ MODEL_PRESET_CANDIDATES: dict[str, list[ModelArch]] = {
     "medium-streaming": [ModelArch.MEDIUM_STREAMING],
 }
 FASTER_WHISPER_MODELS = ["small", "tiny", "base", "medium", "large-v3"]
-BATCH_TRANSCRIPTION_ENGINES = ["faster-whisper", "moonshine"]
+BATCH_TRANSCRIPTION_ENGINES = ["faster-whisper", "moonshine", "groq"]
+REALTIME_TRANSCRIPTION_ENGINES = ["moonshine", "groq"]
+GROQ_TRANSCRIPTION_MODELS = ["whisper-large-v3-turbo", "whisper-large-v3"]
+LLM_PROVIDERS = ["ollama", "groq"]
+OLLAMA_LLM_MODELS = ["gemma4:e2b", "gemma4:e4b"]
+GROQ_LLM_MODELS = [
+    "openai/gpt-oss-20b",
+    "openai/gpt-oss-120b",
+    "llama-3.1-8b-instant",
+    "llama-3.3-70b-versatile",
+]
+GROQ_REASONING_EFFORTS = ["default", "low", "medium", "high"]
+GROQ_SERVICE_TIERS = ["on_demand", "auto", "flex"]
 
 
 @dataclass(slots=True)
@@ -100,8 +112,15 @@ class SettingsService:
             availableModelsByLanguage={
                 language: available_model_presets(language) for language in languages
             },
+            realtimeTranscriptionEngines=REALTIME_TRANSCRIPTION_ENGINES,
+            groqTranscriptionModels=GROQ_TRANSCRIPTION_MODELS,
             batchTranscriptionEngines=BATCH_TRANSCRIPTION_ENGINES,
             fasterWhisperModels=FASTER_WHISPER_MODELS,
+            llmProviders=LLM_PROVIDERS,
+            ollamaLlmModels=OLLAMA_LLM_MODELS,
+            groqLlmModels=GROQ_LLM_MODELS,
+            groqReasoningEfforts=GROQ_REASONING_EFFORTS,
+            groqServiceTiers=GROQ_SERVICE_TIERS,
             defaultLanguage=settings.transcription.language,
             defaultModelPreset=settings.transcription.model_preset,
         )

@@ -8,7 +8,9 @@
   },
   "transcription": {
     "language": "ja",
+    "realtimeTranscriptionEngine": "groq",
     "modelPreset": "base",
+    "groqTranscriptionModel": "whisper-large-v3-turbo",
     "batchTranscriptionEngine": "faster-whisper",
     "batchMoonshineModelPreset": "base",
     "fasterWhisperModel": "base",
@@ -26,34 +28,43 @@
       "anthropic": {
         "apiKey": "",
         "model": ""
+      },
+      "groq": {
+        "apiKey": "",
+        "model": ""
       }
     }
   },
   "llm": {
     "enabled": true,
-    "provider": "ollama",
+    "provider": "groq",
     "baseUrl": "http://localhost:11434",
-    "model": "gemma4:e2b",
+    "model": "openai/gpt-oss-120b",
+    "batchSummaryProvider": "groq",
+    "batchSummaryModel": "openai/gpt-oss-120b",
+    "groqBaseUrl": "https://api.groq.com/openai/v1",
+    "groqReasoningEffort": "medium",
+    "groqServiceTier": "on_demand",
     "contextLines": 3,
     "contextBeforeLines": 3,
     "contextAfterLines": 3,
     "debounceMs": 5000,
     "maxWaitMs": 5000,
-    "completeOnly": true,
-    "systemPrompt": "動画・音声コンテンツの記録として、後から内容を探しやすいサマリー付きログに整形してください。\n\n## 出力形式\n- `# コンテンツ記録`\n- `## 全体サマリー`\n- `## 重要ポイント`\n- `## タイムライン`\n- `## 引用候補`\n- `## 次に確認すること`\n\n## 整形方針\n- リアルタイム文字起こしの粗さを補い、自然な日本語に整えてください。\n- 話題の切り替わりが分かるように見出し化してください。\n- 印象的な表現は引用候補として短く抜き出してください。\n- 事実を追加せず、聞き取れない部分は曖昧なまま扱ってください。"
+    "completeOnly": false,
+    "systemPrompt": "個人の日記・振り返りとして、日付、サマリー、出来事、気づきが残る高密度な記録に整形してください。\n\n## 出力形式\n- `# 日記`\n- `## 日付`\n- `## 今日のサマリー`\n- `## 出来事`\n- `## 感情・気づき`\n- `## 反省`\n- `## 次にやること`\n\n## 整形方針\n- 自分用の記録として、簡潔だが思考の流れが残るようにしてください。\n- 出来事、感情、反省、次の行動を分けてください。\n- 音声内にない心理や理由は決めつけず、話された範囲で整理してください。\n- 箇条書きを中心に、読み返しやすくしてください。"
   },
   "promptSettings": {
-    "activePromptId": "content-record",
+    "activePromptId": "diary",
     "prompts": [
-      {
-        "id": "meeting-minutes",
-        "name": "打ち合わせ議事録（汎用）",
-        "content": "会議・打ち合わせの記録として、読み返してすぐ状況が分かる議事録に整形してください。\n\n## 出力形式\n- `# タイトル`\n- `## サマリー`\n- `## 決定事項`\n- `## TODO`\n- `## 論点・保留事項`\n- `## 詳細メモ`\n\n## 整形方針\n- 発言の重複や言い直しは整理してください。\n- 決定事項と未決事項を分けてください。\n- TODOは担当者、期限、内容が分かる場合だけ具体化してください。\n- 不明な担当者や期限は推測せず、`未定` と書いてください。"
-      },
       {
         "id": "content-record",
         "name": "コンテンツ記録（動画・音声）",
         "content": "動画・音声コンテンツの記録として、後から内容を探しやすいサマリー付きログに整形してください。\n\n## 出力形式\n- `# コンテンツ記録`\n- `## 全体サマリー`\n- `## 重要ポイント`\n- `## タイムライン`\n- `## 引用候補`\n- `## 次に確認すること`\n\n## 整形方針\n- リアルタイム文字起こしの粗さを補い、自然な日本語に整えてください。\n- 話題の切り替わりが分かるように見出し化してください。\n- 印象的な表現は引用候補として短く抜き出してください。\n- 事実を追加せず、聞き取れない部分は曖昧なまま扱ってください。"
+      },
+      {
+        "id": "meeting-minutes",
+        "name": "打ち合わせ議事録（汎用）",
+        "content": "会議・打ち合わせの記録として、読み返してすぐ状況が分かる議事録に整形してください。\n\n## 出力形式\n- `# タイトル`\n- `## サマリー`\n- `## 決定事項`\n- `## TODO`\n- `## 論点・保留事項`\n- `## 詳細メモ`\n\n## 整形方針\n- 発言の重複や言い直しは整理してください。\n- 決定事項と未決事項を分けてください。\n- TODOは担当者、期限、内容が分かる場合だけ具体化してください。\n- 不明な担当者や期限は推測せず、`未定` と書いてください。"
       },
       {
         "id": "expert-interview",

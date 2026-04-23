@@ -40,6 +40,9 @@ class FakeLiveSession:
     def finalize(self) -> None:
         return None
 
+    async def finalize_after_refinement(self) -> None:
+        return None
+
     def shutdown(self) -> None:
         return None
 

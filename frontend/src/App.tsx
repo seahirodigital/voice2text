@@ -19,6 +19,7 @@ import {
   Search,
   Square,
   Settings2,
+  Tag,
   Trash2,
   Upload,
   X,
@@ -69,7 +70,28 @@ const SIDEBAR_MAX_WIDTH = 520;
 const MINUTES_PANE_MIN_WIDTH = 280;
 const SETTINGS_AUTOSAVE_DELAY_MS = 450;
 const TRANSCRIPT_COLUMN_GAP_PX = 16;
-const LLM_MODEL_OPTIONS = ["gemma4:e2b", "gemma4:e4b"];
+const OLLAMA_LLM_MODEL_OPTIONS = ["gemma4:e2b", "gemma4:e4b"];
+const DEFAULT_OLLAMA_LLM_MODEL = OLLAMA_LLM_MODEL_OPTIONS[0];
+const DEFAULT_OLLAMA_BATCH_SUMMARY_MODEL = "gemma4:e4b";
+const DEFAULT_GROQ_TRANSCRIPTION_MODEL = "whisper-large-v3-turbo";
+const FALLBACK_REALTIME_TRANSCRIPTION_ENGINES = ["moonshine", "groq"] as const;
+const FALLBACK_BATCH_TRANSCRIPTION_ENGINES = [
+  "faster-whisper",
+  "moonshine",
+  "groq",
+] as const;
+const FALLBACK_GROQ_TRANSCRIPTION_MODELS = [
+  DEFAULT_GROQ_TRANSCRIPTION_MODEL,
+  "whisper-large-v3",
+];
+const DEFAULT_GROQ_LLM_MODEL = "openai/gpt-oss-20b";
+const FALLBACK_GROQ_LLM_MODELS = [
+  DEFAULT_GROQ_LLM_MODEL,
+  "openai/gpt-oss-120b",
+  "llama-3.1-8b-instant",
+  "llama-3.3-70b-versatile",
+];
+const FALLBACK_LLM_PROVIDERS = ["ollama", "groq"] as const;
 const DEVICE_ID_STORAGE_KEY = "voice2text.device-id";
 const DEFAULT_PROMPT_ID = "meeting-minutes";
 const DEFAULT_PROMPT_NAME = "打ち合わせ議事録（汎用）";
@@ -90,6 +112,15 @@ const LANGUAGE_LABELS: Record<string, string> = {
 const BATCH_ENGINE_LABELS: Record<string, string> = {
   "faster-whisper": "Faster Whisper",
   moonshine: "Moonshine",
+  groq: "Groq",
+};
+const REALTIME_ENGINE_LABELS: Record<string, string> = {
+  moonshine: "Moonshine",
+  groq: "Groq",
+};
+const LLM_PROVIDER_LABELS: Record<string, string> = {
+  ollama: "Gemma4 (Ollama)",
+  groq: "Groq",
 };
 const DEFAULT_FASTER_WHISPER_MODEL = "small";
 const DEFAULT_MOONSHINE_BATCH_MODEL = "base";
@@ -127,10 +158,10 @@ type SettingsHelpTopic =
 
 const SETTINGS_HELP_TITLES: Record<SettingsHelpTopic, string> = {
   transcription: "文字起こし設定",
-  batch: "BATCH",
-  batchModel: "Batch Model",
-  localLlm: "Local LLM",
-  providers: "AI Providers",
+  batch: "バッチ処理",
+  batchModel: "バッチ文字起こしモデル",
+  localLlm: "LLM整形",
+  providers: "AIプロバイダー",
 };
 
 const FASTER_WHISPER_MODEL_ROWS = [
@@ -301,12 +332,13 @@ function SettingsHelpContent({ topic }: { topic: SettingsHelpTopic }) {
     return (
       <div className="space-y-3 text-sm leading-7 text-slate-600">
         <p>
-          BATCH は録音停止後に表示される `文字起こし整形` ボタンで使う
+          バッチ処理は録音停止後に表示される `文字起こし整形` ボタンで使う
           一括処理の設定です。
         </p>
         <p>
-          ENGINEERING では一括文字起こしのエンジンを選びます。既定は
-          Faster Whisper です。MODEL では、そのエンジンで使うモデルサイズを選びます。
+          文字起こしエンジンでは一括文字起こしの処理方法を選びます。Faster Whisper、
+          Moonshine、Groqを選択できます。GroqではAPI経由のWhisperモデルを使います。
+          文字起こしモデルでは、そのエンジンで使うモデルを選びます。
         </p>
       </div>
     );
@@ -316,11 +348,11 @@ function SettingsHelpContent({ topic }: { topic: SettingsHelpTopic }) {
     return (
       <div className="space-y-3 text-sm leading-7 text-slate-600">
         <p>
-          文字起こしはリアルタイム録音中に使う設定です。言語は認識対象の言語、
-          Moonshine Model はリアルタイム処理で使うMoonshineモデルを表します。
+          リアルタイムは録音中の文字起こしに使う設定です。言語は認識対象の言語、
+          モデルは選択中の文字起こしエンジンで使うモデルを表します。
         </p>
         <p>
-          BATCH の設定とは別です。BATCH は録音停止後の `文字起こし整形`
+          バッチ処理の設定とは別です。バッチ処理は録音停止後の `文字起こし整形`
           で使います。
         </p>
       </div>
@@ -331,11 +363,11 @@ function SettingsHelpContent({ topic }: { topic: SettingsHelpTopic }) {
     return (
       <div className="space-y-3 text-sm leading-7 text-slate-600">
         <p>
-          Local LLM はOllamaで動くGemmaを使い、リアルタイムの `LLM Refined`
-          列や一括整形後のミニッツ生成を補助します。
+          LLM整形は選択したプロバイダーのモデルを使い、リアルタイムの整形列や
+          一括整形後のミニッツ生成を補助します。
         </p>
         <p>
-          `Enable refinement` をONにすると、Moonshineの文字起こしとは別列に
+          `LLM整形を有効化` をONにすると、文字起こしとは別列に
           LLM整形結果を表示します。
         </p>
       </div>
@@ -345,7 +377,7 @@ function SettingsHelpContent({ topic }: { topic: SettingsHelpTopic }) {
   return (
     <div className="space-y-3 text-sm leading-7 text-slate-600">
       <p>
-        AI Providers は外部AIサービス用の設定欄です。現在のローカルGemma/Ollama
+        AIプロバイダーは外部AIサービス用の設定欄です。現在のローカルGemma/Ollama
         処理とは別に、将来の比較や拡張用として保持しています。
       </p>
       <p>通常のローカル利用では空欄のままで問題ありません。</p>
@@ -521,6 +553,23 @@ function formatLongClock(seconds: number) {
   return `${hours}:${minutes}:${secs}`;
 }
 
+function getTranscriptionModelLabel(segment: TranscriptSegment) {
+  const explicitLabel = segment.transcriptionModel?.trim();
+  if (explicitLabel) {
+    return explicitLabel;
+  }
+  if (segment.speakerSource === "groq") {
+    return "Groq";
+  }
+  if (segment.speakerSource === "moonshine") {
+    return "Moonshine";
+  }
+  if (segment.speakerSource === "faster-whisper") {
+    return "Faster Whisper";
+  }
+  return null;
+}
+
 function sanitizeFilename(value: string) {
   return (
     value
@@ -652,11 +701,13 @@ function normalizeBatchSettings(
   settings: AppSettings,
   fasterWhisperModels: string[] = FALLBACK_FASTER_WHISPER_MODELS,
   moonshineModels: string[] = [],
+  groqTranscriptionModels: string[] = FALLBACK_GROQ_TRANSCRIPTION_MODELS,
 ): AppSettings {
-  const engine =
-    settings.transcription.batchTranscriptionEngine === "moonshine"
-      ? "moonshine"
-      : DEFAULT_BATCH_TRANSCRIPTION_ENGINE;
+  const engine = FALLBACK_BATCH_TRANSCRIPTION_ENGINES.includes(
+    settings.transcription.batchTranscriptionEngine,
+  )
+    ? settings.transcription.batchTranscriptionEngine
+    : DEFAULT_BATCH_TRANSCRIPTION_ENGINE;
   const fasterModel = fasterWhisperModels.includes(
     settings.transcription.fasterWhisperModel,
   )
@@ -671,14 +722,24 @@ function normalizeBatchSettings(
   )
     ? settings.transcription.batchMoonshineModelPreset
     : moonshineFallback;
+  const groqFallback =
+    groqTranscriptionModels.includes(DEFAULT_GROQ_TRANSCRIPTION_MODEL)
+      ? DEFAULT_GROQ_TRANSCRIPTION_MODEL
+      : groqTranscriptionModels[0] || DEFAULT_GROQ_TRANSCRIPTION_MODEL;
+  const groqModel = groqTranscriptionModels.includes(
+    settings.transcription.batchGroqTranscriptionModel,
+  )
+    ? settings.transcription.batchGroqTranscriptionModel
+    : groqFallback;
 
   return {
     ...settings,
     transcription: {
       ...settings.transcription,
-      batchTranscriptionEngine: engine as "faster-whisper" | "moonshine",
+      batchTranscriptionEngine: engine,
       fasterWhisperModel: fasterModel,
       batchMoonshineModelPreset: moonshineModel,
+      batchGroqTranscriptionModel: groqModel,
     },
   };
 }
@@ -1145,11 +1206,14 @@ function App() {
           ? effectiveMeta.availableModelsByLanguage[effectiveMeta.defaultLanguage]
           : undefined) ??
         ["tiny"];
+      const groqTranscriptionModels =
+        effectiveMeta?.groqTranscriptionModels ?? FALLBACK_GROQ_TRANSCRIPTION_MODELS;
       return settingsWithRuntimePrompt(
         normalizeBatchSettings(
           settings,
           fasterWhisperModels,
           moonshineModels,
+          groqTranscriptionModels,
         ),
       );
     },
@@ -1293,6 +1357,7 @@ function App() {
         ] ??
           metaPayload.availableModelsByLanguage[metaPayload.defaultLanguage] ??
           ["tiny"],
+        metaPayload.groqTranscriptionModels,
       );
       lastSavedSettingsSnapshotRef.current = JSON.stringify(normalizedSettings);
 
@@ -1678,7 +1743,11 @@ function App() {
             type: "start_session",
             payload: {
               language: draftSettings.transcription.language,
+              realtimeTranscriptionEngine:
+                draftSettings.transcription.realtimeTranscriptionEngine,
               modelPreset: draftSettings.transcription.modelPreset,
+              groqTranscriptionModel:
+                draftSettings.transcription.groqTranscriptionModel,
               browserSampleRate: audioContext.sampleRate,
               channels: 1,
               deviceLabel: selectedDevice?.label || "Default Microphone",
@@ -4249,13 +4318,22 @@ function App() {
                         existing record is opened.
                       </motion.div>
                     ) : (
-                      deferredSegments.map((segment) => {
+                      deferredSegments.map((segment, index) => {
                         const isPlaybackActive = playbackActiveSegmentId === segment.id;
                         const isPlaybackButtonActive =
                           isAudioPlaying && playbackActiveSegmentId === segment.id;
                         const timePlaybackCellClass = isPlaybackActive
                           ? "playback-cell playback-cell-active"
                           : "playback-cell";
+                        const transcriptionModelLabel =
+                          getTranscriptionModelLabel(segment);
+                        const previousTranscriptionModelLabel =
+                          index > 0
+                            ? getTranscriptionModelLabel(deferredSegments[index - 1])
+                            : null;
+                        const showTranscriptionModelTag =
+                          transcriptionModelLabel !== null &&
+                          transcriptionModelLabel !== previousTranscriptionModelLabel;
 
                         return (
                           <motion.article
@@ -4336,6 +4414,17 @@ function App() {
                                   </button>
                                 ) : null}
                               </div>
+                              {showTranscriptionModelTag ? (
+                                <span
+                                  className="mt-1 inline-flex max-w-full items-center gap-1 rounded-md bg-[#007aff] px-1.5 py-0.5 text-[11px] font-bold text-white"
+                                  title={transcriptionModelLabel ?? undefined}
+                                >
+                                  <Tag className="size-3 shrink-0" />
+                                  <span className="truncate">
+                                    {transcriptionModelLabel}
+                                  </span>
+                                </span>
+                              ) : null}
                             </div>
                             {showRawTranscript ? (
                               <div className="mt-1 min-w-0 rounded-xl px-3 py-2 lg:mt-0">
@@ -4557,7 +4646,7 @@ function App() {
           <>
             <motion.button
               type="button"
-              aria-label="Close settings panel"
+              aria-label="設定パネルを閉じる"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
@@ -4574,17 +4663,17 @@ function App() {
               <div className="flex items-center justify-between border-b border-slate-200 px-6 py-5">
                 <div>
                   <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-slate-400">
-                    Settings
+                    設定
                   </p>
                   <h2 className="mt-1 text-lg font-semibold text-slate-900">
-                    Capture and path configuration
+                    録音とAI処理の設定
                   </h2>
                 </div>
                 <button
                   type="button"
                   onClick={closeSettingsPanel}
                   className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 text-slate-500 transition-colors hover:border-slate-300 hover:text-slate-700"
-                  aria-label="Close settings"
+                  aria-label="設定を閉じる"
                 >
                   <X className="size-4" />
                 </button>
@@ -4592,35 +4681,23 @@ function App() {
 
               <div className="app-scrollbar flex-1 space-y-6 overflow-y-auto px-6 py-6">
                 <section className="space-y-4">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-slate-400">
-                        文字起こし
-                      </p>
-                      <button
-                        type="button"
-                        onClick={() => setSettingsHelpTopic("transcription")}
-                        className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-slate-200 text-slate-400 transition-colors hover:border-[#007aff] hover:text-[#007aff]"
-                        aria-label="文字起こし設定の説明"
-                      >
-                        <CircleHelp className="size-3.5" />
-                      </button>
-                    </div>
-                  </div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-slate-400">
+                    マイク設定
+                  </p>
 
                   <div className="space-y-2">
-                    <label className="field-label">Microphone</label>
+                    <label className="field-label">マイク</label>
                     <select
                       value={deviceId}
                       onChange={(event) => setDeviceId(event.target.value)}
                       className="field-input"
                     >
                       {devices.length === 0 ? (
-                        <option value="">No microphone detected</option>
+                        <option value="">マイクが見つかりません</option>
                       ) : (
                         devices.map((device) => (
                           <option key={device.deviceId} value={device.deviceId}>
-                            {device.label || "Unnamed microphone"}
+                            {device.label || "名前のないマイク"}
                           </option>
                         ))
                       )}
@@ -4629,6 +4706,12 @@ function App() {
 
                   {draftSettings ? (
                     <>
+                      <div className="border-t border-slate-100 pt-4">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-slate-400">
+                          リアルタイム
+                        </p>
+                      </div>
+
                       <div className="grid gap-4 sm:grid-cols-2">
                         <div className="space-y-2">
                           <label className="field-label">言語</label>
@@ -4660,95 +4743,81 @@ function App() {
                         </div>
 
                         <div className="space-y-2">
-                          <label className="field-label">Moonshine Model</label>
+                          <label className="field-label">リアルタイム文字起こし</label>
                           <select
-                            value={draftSettings.transcription.modelPreset}
-                            onChange={(event) =>
+                            value={
+                              draftSettings.transcription.realtimeTranscriptionEngine
+                            }
+                            onChange={(event) => {
+                              const nextEngine = event.target.value as
+                                | "moonshine"
+                                | "groq";
                               updateDraftSettings((current) => ({
                                 ...current,
                                 transcription: {
                                   ...current.transcription,
-                                  modelPreset: event.target.value,
+                                  realtimeTranscriptionEngine: nextEngine,
+                                  groqTranscriptionModel:
+                                    current.transcription.groqTranscriptionModel ||
+                                    DEFAULT_GROQ_TRANSCRIPTION_MODEL,
                                 },
-                              }))
-                            }
+                              }));
+                            }}
                             className="field-input"
                           >
-                            {activeModelOptions.map((preset) => (
-                              <option key={preset} value={preset}>
-                                {preset}
+                            {(
+                              meta?.realtimeTranscriptionEngines ??
+                              FALLBACK_REALTIME_TRANSCRIPTION_ENGINES
+                            ).map((engine) => (
+                              <option key={engine} value={engine}>
+                                {REALTIME_ENGINE_LABELS[engine] ?? engine}
                               </option>
                             ))}
                           </select>
                         </div>
                       </div>
 
-                      <div className="space-y-4 border-t border-slate-100 pt-4">
-                        <div className="flex items-center gap-2">
-                          <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-slate-400">
-                            BATCH
-                          </p>
-                          <button
-                            type="button"
-                            onClick={() => setSettingsHelpTopic("batch")}
-                            className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-slate-200 text-slate-400 transition-colors hover:border-[#007aff] hover:text-[#007aff]"
-                            aria-label="BATCH設定の説明"
-                          >
-                            <CircleHelp className="size-3.5" />
-                          </button>
-                        </div>
-
-                        <div className="grid gap-4 sm:grid-cols-2">
-                          <div className="space-y-2">
-                            <label className="field-label">ENGINEERING</label>
-                          <select
-                            value={draftSettings.transcription.batchTranscriptionEngine}
-                            onChange={(event) =>
-                              updateDraftSettings((current) => ({
-                                ...current,
-                                transcription: {
-                                  ...current.transcription,
-                                  batchTranscriptionEngine: event.target.value as
-                                    | "faster-whisper"
-                                    | "moonshine",
-                                },
-                              }))
-                            }
-                            className="field-input"
-                          >
-                            {(meta?.batchTranscriptionEngines ?? [
-                              "faster-whisper",
-                              "moonshine",
-                            ]).map((engine) => (
-                              <option key={engine} value={engine}>
-                                {BATCH_ENGINE_LABELS[engine] ?? engine}
-                              </option>
-                            ))}
-                          </select>
-                          </div>
-
-                          <div className="space-y-2">
-                            <div className="flex items-center gap-2">
-                              <label className="field-label">MODEL</label>
-                              <button
-                                type="button"
-                                onClick={() => setSettingsHelpTopic("batchModel")}
-                                className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-slate-200 text-slate-400 transition-colors hover:border-[#007aff] hover:text-[#007aff]"
-                                aria-label="Batch Modelの説明"
-                              >
-                                <CircleHelp className="size-3.5" />
-                              </button>
-                            </div>
-                          {draftSettings.transcription.batchTranscriptionEngine ===
-                          "moonshine" ? (
+                      <div className="grid gap-4 sm:grid-cols-2">
+                        <div className="space-y-2">
+                          <label className="field-label">
+                            {draftSettings.transcription.realtimeTranscriptionEngine ===
+                            "groq"
+                              ? "Groq文字起こしモデル"
+                              : "Moonshineモデル"}
+                          </label>
+                          {draftSettings.transcription.realtimeTranscriptionEngine ===
+                          "groq" ? (
                             <select
-                              value={draftSettings.transcription.batchMoonshineModelPreset}
+                              value={draftSettings.transcription.groqTranscriptionModel}
                               onChange={(event) =>
                                 updateDraftSettings((current) => ({
                                   ...current,
                                   transcription: {
                                     ...current.transcription,
-                                    batchMoonshineModelPreset: event.target.value,
+                                    groqTranscriptionModel: event.target.value,
+                                  },
+                                }))
+                              }
+                              className="field-input"
+                            >
+                              {(
+                                meta?.groqTranscriptionModels ??
+                                FALLBACK_GROQ_TRANSCRIPTION_MODELS
+                              ).map((model) => (
+                                <option key={model} value={model}>
+                                  Groq {model}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <select
+                              value={draftSettings.transcription.modelPreset}
+                              onChange={(event) =>
+                                updateDraftSettings((current) => ({
+                                  ...current,
+                                  transcription: {
+                                    ...current.transcription,
+                                    modelPreset: event.target.value,
                                   },
                                 }))
                               }
@@ -4756,39 +4825,17 @@ function App() {
                             >
                               {activeModelOptions.map((preset) => (
                                 <option key={preset} value={preset}>
-                                  Moonshine {preset}
-                                </option>
-                              ))}
-                            </select>
-                          ) : (
-                            <select
-                              value={draftSettings.transcription.fasterWhisperModel}
-                              onChange={(event) =>
-                                updateDraftSettings((current) => ({
-                                  ...current,
-                                  transcription: {
-                                    ...current.transcription,
-                                    fasterWhisperModel: event.target.value,
-                                  },
-                                }))
-                              }
-                            className="field-input"
-                          >
-                            {(meta?.fasterWhisperModels ??
-                              FALLBACK_FASTER_WHISPER_MODELS).map((model) => (
-                                <option key={model} value={model}>
-                                  Faster Whisper {model}
+                                  {preset}
                                 </option>
                               ))}
                             </select>
                           )}
-                          </div>
                         </div>
                       </div>
 
                       <div className="grid gap-4 sm:grid-cols-2">
                         <div className="space-y-2">
-                          <label className="field-label">Max Speakers</label>
+                          <label className="field-label">話者数</label>
                           <input
                             type="number"
                             min={1}
@@ -4808,7 +4855,7 @@ function App() {
                         </div>
 
                         <div className="space-y-2">
-                          <label className="field-label">Update Interval ms</label>
+                          <label className="field-label">更新間隔 ms</label>
                           <input
                             type="text"
                             inputMode="numeric"
@@ -4853,10 +4900,10 @@ function App() {
                       <label className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
                         <div>
                           <p className="text-sm font-medium text-slate-900">
-                            Enable word timestamps
+                            単語タイムスタンプを有効化
                           </p>
                           <p className="mt-1 text-xs text-slate-500">
-                            Pass word-level timestamp hints to the backend session.
+                            Moonshineに単語単位の時刻ヒントを渡します。
                           </p>
                         </div>
                         <input
@@ -4884,57 +4931,23 @@ function App() {
                       <div>
                         <div className="flex items-center gap-2">
                           <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-slate-400">
-                            Local LLM
+                            LLM整形
                           </p>
                           <button
                             type="button"
                             onClick={() => setSettingsHelpTopic("localLlm")}
                             className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-slate-200 text-slate-400 transition-colors hover:border-[#007aff] hover:text-[#007aff]"
-                            aria-label="Local LLMの説明"
+                            aria-label="LLM整形の説明"
                           >
                             <CircleHelp className="size-3.5" />
                           </button>
                         </div>
                       </div>
 
-                      <div className="space-y-2 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                        <label className="field-label">使用プロンプト</label>
-                        <div className="flex gap-2">
-                          <select
-                            value={activePromptId}
-                            onChange={(event) => selectActivePrompt(event.target.value)}
-                            className="field-input"
-                          >
-                            {promptList.map((prompt) => (
-                              <option key={prompt.id} value={prompt.id}>
-                                {prompt.name}
-                              </option>
-                            ))}
-                          </select>
-                          <Button
-                            type="button"
-                            variant="secondary"
-                            className="h-11 shrink-0 rounded-xl px-4 text-sm"
-                            onClick={() => void saveSettings(draftSettings)}
-                            disabled={savingSettings || promptList.length === 0}
-                          >
-                            {savingSettings ? (
-                              <LoaderCircle className="size-4 animate-spin" />
-                            ) : (
-                              <Save className="size-4" />
-                            )}
-                            保存
-                          </Button>
-                        </div>
-                        <p className="text-xs leading-5 text-slate-500">
-                          選択した用途テンプレートがリアルタイム整形と一括整形に使われます。
-                        </p>
-                      </div>
-
                       <label className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
                         <div>
                           <p className="text-sm font-medium text-slate-900">
-                            Enable refinement
+                            LLM整形を有効化
                           </p>
                         </div>
                         <input
@@ -4955,7 +4968,43 @@ function App() {
 
                       <div className="grid gap-4 sm:grid-cols-2">
                         <div className="space-y-2">
-                          <label className="field-label">Gemma Model</label>
+                          <label className="field-label">LLMプロバイダー</label>
+                          <select
+                            value={draftSettings.llm.provider}
+                            onChange={(event) => {
+                              const nextProvider = event.target.value as
+                                | "ollama"
+                                | "groq";
+                              updateDraftSettings((current) => ({
+                                ...current,
+                                llm: {
+                                  ...current.llm,
+                                  provider: nextProvider,
+                                  model:
+                                    nextProvider === "groq"
+                                      ? DEFAULT_GROQ_LLM_MODEL
+                                      : DEFAULT_OLLAMA_LLM_MODEL,
+                                },
+                              }));
+                            }}
+                            className="field-input"
+                          >
+                            {(meta?.llmProviders ?? FALLBACK_LLM_PROVIDERS).map(
+                              (provider) => (
+                                <option key={provider} value={provider}>
+                                  {LLM_PROVIDER_LABELS[provider] ?? provider}
+                                </option>
+                              ),
+                            )}
+                          </select>
+                        </div>
+
+                        <div className="space-y-2">
+                          <label className="field-label">
+                            {draftSettings.llm.provider === "groq"
+                              ? "Groqモデル"
+                              : "Gemmaモデル"}
+                          </label>
                           <select
                             value={draftSettings.llm.model}
                             onChange={(event) =>
@@ -4969,7 +5018,10 @@ function App() {
                             }
                             className="field-input"
                           >
-                            {LLM_MODEL_OPTIONS.map((model) => (
+                            {(draftSettings.llm.provider === "groq"
+                              ? meta?.groqLlmModels ?? FALLBACK_GROQ_LLM_MODELS
+                              : meta?.ollamaLlmModels ?? OLLAMA_LLM_MODEL_OPTIONS
+                            ).map((model) => (
                               <option key={model} value={model}>
                                 {model}
                               </option>
@@ -4978,7 +5030,7 @@ function App() {
                         </div>
 
                         <div className="space-y-2">
-                          <label className="field-label">Context Before</label>
+                          <label className="field-label">前の文脈行数</label>
                           <input
                             type="number"
                             min={0}
@@ -5001,7 +5053,7 @@ function App() {
                         </div>
 
                         <div className="space-y-2">
-                          <label className="field-label">Block Lines After</label>
+                          <label className="field-label">後ろの文脈行数</label>
                           <input
                             type="number"
                             min={0}
@@ -5024,7 +5076,7 @@ function App() {
                         </div>
 
                         <div className="space-y-2">
-                          <label className="field-label">Debounce ms</label>
+                          <label className="field-label">待機時間 ms</label>
                           <input
                             type="number"
                             min={0}
@@ -5048,7 +5100,7 @@ function App() {
                         </div>
 
                         <div className="space-y-2">
-                          <label className="field-label">Max Wait ms</label>
+                          <label className="field-label">最大待機 ms</label>
                           <input
                             type="number"
                             min={0}
@@ -5072,16 +5124,26 @@ function App() {
                         </div>
 
                         <div className="space-y-2">
-                          <label className="field-label">Ollama URL</label>
+                          <label className="field-label">
+                            {draftSettings.llm.provider === "groq"
+                              ? "Groq APIベースURL"
+                              : "Ollama URL"}
+                          </label>
                           <input
                             type="text"
-                            value={draftSettings.llm.baseUrl}
+                            value={
+                              draftSettings.llm.provider === "groq"
+                                ? draftSettings.llm.groqBaseUrl
+                                : draftSettings.llm.baseUrl
+                            }
                             onChange={(event) =>
                               updateDraftSettings((current) => ({
                                 ...current,
                                 llm: {
                                   ...current.llm,
-                                  baseUrl: event.target.value,
+                                  ...(current.llm.provider === "groq"
+                                    ? { groqBaseUrl: event.target.value }
+                                    : { baseUrl: event.target.value }),
                                 },
                               }))
                             }
@@ -5093,10 +5155,10 @@ function App() {
                       <label className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
                         <div>
                           <p className="text-sm font-medium text-slate-900">
-                            Complete lines only
+                            完了行のみ整形
                           </p>
                           <p className="mt-1 text-xs text-slate-500">
-                            Wait until Moonshine marks a line complete before refinement.
+                            文字起こしエンジンが行を完了扱いにしてから整形します。
                           </p>
                         </div>
                         <input
@@ -5117,16 +5179,228 @@ function App() {
                     </section>
 
                     <section className="space-y-4">
+                      <div className="flex items-center gap-2">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-slate-400">
+                          バッチ処理（文字起こし→整形）
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => setSettingsHelpTopic("batch")}
+                          className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-slate-200 text-slate-400 transition-colors hover:border-[#007aff] hover:text-[#007aff]"
+                          aria-label="バッチ処理設定の説明"
+                        >
+                          <CircleHelp className="size-3.5" />
+                        </button>
+                      </div>
+
+                      <div className="grid gap-4 sm:grid-cols-2">
+                        <div className="space-y-2">
+                          <label className="field-label">文字起こしエンジン</label>
+                          <select
+                            value={draftSettings.transcription.batchTranscriptionEngine}
+                            onChange={(event) =>
+                              updateDraftSettings((current) => ({
+                                ...current,
+                                transcription: {
+                                  ...current.transcription,
+                                  batchTranscriptionEngine: event.target.value as
+                                    | "faster-whisper"
+                                    | "moonshine"
+                                    | "groq",
+                                },
+                              }))
+                            }
+                            className="field-input"
+                          >
+                            {(
+                              meta?.batchTranscriptionEngines ??
+                              FALLBACK_BATCH_TRANSCRIPTION_ENGINES
+                            ).map((engine) => (
+                              <option key={engine} value={engine}>
+                                {BATCH_ENGINE_LABELS[engine] ?? engine}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div className="space-y-2">
+                          <label className="field-label">文字起こしモデル</label>
+                          {draftSettings.transcription.batchTranscriptionEngine ===
+                          "moonshine" ? (
+                            <select
+                              value={draftSettings.transcription.batchMoonshineModelPreset}
+                              onChange={(event) =>
+                                updateDraftSettings((current) => ({
+                                  ...current,
+                                  transcription: {
+                                    ...current.transcription,
+                                    batchMoonshineModelPreset: event.target.value,
+                                  },
+                                }))
+                              }
+                              className="field-input"
+                            >
+                              {activeModelOptions.map((preset) => (
+                                <option key={preset} value={preset}>
+                                  Moonshine {preset}
+                                </option>
+                              ))}
+                            </select>
+                          ) : draftSettings.transcription.batchTranscriptionEngine ===
+                            "groq" ? (
+                            <select
+                              value={
+                                draftSettings.transcription.batchGroqTranscriptionModel
+                              }
+                              onChange={(event) =>
+                                updateDraftSettings((current) => ({
+                                  ...current,
+                                  transcription: {
+                                    ...current.transcription,
+                                    batchGroqTranscriptionModel: event.target.value,
+                                  },
+                                }))
+                              }
+                              className="field-input"
+                            >
+                              {(
+                                meta?.groqTranscriptionModels ??
+                                FALLBACK_GROQ_TRANSCRIPTION_MODELS
+                              ).map((model) => (
+                                <option key={model} value={model}>
+                                  Groq {model}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <select
+                              value={draftSettings.transcription.fasterWhisperModel}
+                              onChange={(event) =>
+                                updateDraftSettings((current) => ({
+                                  ...current,
+                                  transcription: {
+                                    ...current.transcription,
+                                    fasterWhisperModel: event.target.value,
+                                  },
+                                }))
+                              }
+                              className="field-input"
+                            >
+                              {(meta?.fasterWhisperModels ??
+                                FALLBACK_FASTER_WHISPER_MODELS).map((model) => (
+                                <option key={model} value={model}>
+                                  Faster Whisper {model}
+                                </option>
+                              ))}
+                            </select>
+                          )}
+                        </div>
+
+                        <div className="space-y-2">
+                          <label className="field-label">整形LLM</label>
+                          <select
+                            value={draftSettings.llm.batchSummaryProvider}
+                            onChange={(event) => {
+                              const nextProvider = event.target.value as
+                                | "ollama"
+                                | "groq";
+                              updateDraftSettings((current) => ({
+                                ...current,
+                                llm: {
+                                  ...current.llm,
+                                  batchSummaryProvider: nextProvider,
+                                  batchSummaryModel:
+                                    nextProvider === "groq"
+                                      ? DEFAULT_GROQ_LLM_MODEL
+                                      : DEFAULT_OLLAMA_BATCH_SUMMARY_MODEL,
+                                },
+                              }));
+                            }}
+                            className="field-input"
+                          >
+                            {(meta?.llmProviders ?? FALLBACK_LLM_PROVIDERS).map(
+                              (provider) => (
+                                <option key={provider} value={provider}>
+                                  {LLM_PROVIDER_LABELS[provider] ?? provider}
+                                </option>
+                              ),
+                            )}
+                          </select>
+                        </div>
+
+                        <div className="space-y-2">
+                          <label className="field-label">整形モデル</label>
+                          <select
+                            value={draftSettings.llm.batchSummaryModel}
+                            onChange={(event) =>
+                              updateDraftSettings((current) => ({
+                                ...current,
+                                llm: {
+                                  ...current.llm,
+                                  batchSummaryModel: event.target.value,
+                                },
+                              }))
+                            }
+                            className="field-input"
+                          >
+                            {(draftSettings.llm.batchSummaryProvider === "groq"
+                              ? meta?.groqLlmModels ?? FALLBACK_GROQ_LLM_MODELS
+                              : meta?.ollamaLlmModels ?? OLLAMA_LLM_MODEL_OPTIONS
+                            ).map((model) => (
+                              <option key={model} value={model}>
+                                {model}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-4 sm:col-span-2">
+                          <label className="field-label">使用プロンプト</label>
+                          <div className="flex gap-2">
+                            <select
+                              value={activePromptId}
+                              onChange={(event) => selectActivePrompt(event.target.value)}
+                              className="field-input"
+                            >
+                              {promptList.map((prompt) => (
+                                <option key={prompt.id} value={prompt.id}>
+                                  {prompt.name}
+                                </option>
+                              ))}
+                            </select>
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              className="h-11 shrink-0 rounded-xl px-4 text-sm"
+                              onClick={() => void saveSettings(draftSettings)}
+                              disabled={savingSettings || promptList.length === 0}
+                            >
+                              {savingSettings ? (
+                                <LoaderCircle className="size-4 animate-spin" />
+                              ) : (
+                                <Save className="size-4" />
+                              )}
+                              保存
+                            </Button>
+                          </div>
+                          <p className="text-xs leading-5 text-slate-500">
+                            バッチ処理の整形で使う用途テンプレートです。
+                          </p>
+                        </div>
+                      </div>
+                    </section>
+
+                    <section className="space-y-4">
                       <div>
                         <div className="flex items-center gap-2">
                           <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-slate-400">
-                            AI Providers
+                            AIプロバイダー
                           </p>
                           <button
                             type="button"
                             onClick={() => setSettingsHelpTopic("providers")}
                             className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-slate-200 text-slate-400 transition-colors hover:border-[#007aff] hover:text-[#007aff]"
-                            aria-label="AI Providersの説明"
+                            aria-label="AIプロバイダーの説明"
                           >
                             <CircleHelp className="size-3.5" />
                           </button>
@@ -5134,7 +5408,7 @@ function App() {
                       </div>
 
                       <div className="space-y-2">
-                        <label className="field-label">OpenAI API Key</label>
+                        <label className="field-label">OpenAI APIキー</label>
                         <input
                           type="password"
                           value={draftSettings.apiSettings.providers.openai.apiKey}
@@ -5158,7 +5432,7 @@ function App() {
                       </div>
 
                       <div className="space-y-2">
-                        <label className="field-label">OpenAI Model</label>
+                        <label className="field-label">OpenAIモデル</label>
                         <input
                           type="text"
                           value={draftSettings.apiSettings.providers.openai.model}
@@ -5182,7 +5456,7 @@ function App() {
                       </div>
 
                       <div className="space-y-2">
-                        <label className="field-label">Anthropic API Key</label>
+                        <label className="field-label">Anthropic APIキー</label>
                         <input
                           type="password"
                           value={draftSettings.apiSettings.providers.anthropic.apiKey}
@@ -5206,7 +5480,7 @@ function App() {
                       </div>
 
                       <div className="space-y-2">
-                        <label className="field-label">Anthropic Model</label>
+                        <label className="field-label">Anthropicモデル</label>
                         <input
                           type="text"
                           value={draftSettings.apiSettings.providers.anthropic.model}
@@ -5230,7 +5504,33 @@ function App() {
                       </div>
 
                       <div className="space-y-2">
-                        <label className="field-label">Prompt Draft</label>
+                        <label className="field-label">Groq APIキー</label>
+                        <input
+                          type="password"
+                          value={draftSettings.apiSettings.providers.groq.apiKey}
+                          onChange={(event) =>
+                            updateDraftSettings((current) => ({
+                              ...current,
+                              apiSettings: {
+                                ...current.apiSettings,
+                                providers: {
+                                  ...current.apiSettings.providers,
+                                  groq: {
+                                    ...current.apiSettings.providers.groq,
+                                    apiKey: event.target.value,
+                                  },
+                                },
+                              },
+                            }))
+                          }
+                          className="field-input"
+                          autoComplete="off"
+                          placeholder="gsk_..."
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <label className="field-label">プロンプト下書き</label>
                         <textarea
                           value={draftSettings.apiSettings.systemPrompt}
                           onChange={(event) =>

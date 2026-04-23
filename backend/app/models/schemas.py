@@ -22,6 +22,7 @@ class ProviderConfig(BaseModel):
 class ProvidersConfig(BaseModel):
     openai: ProviderConfig = ProviderConfig()
     anthropic: ProviderConfig = ProviderConfig()
+    groq: ProviderConfig = ProviderConfig()
 
 
 class ApiSettings(BaseModel):
@@ -33,9 +34,29 @@ class ApiSettings(BaseModel):
 
 class LlmSettings(BaseModel):
     enabled: bool = True
-    provider: Literal["ollama"] = "ollama"
+    provider: Literal["ollama", "groq"] = "ollama"
     base_url: str = Field(default="http://localhost:11434", alias="baseUrl")
     model: str = "gemma4:e2b"
+    batch_summary_provider: Literal["ollama", "groq"] = Field(
+        default="ollama",
+        alias="batchSummaryProvider",
+    )
+    batch_summary_model: str = Field(
+        default="gemma4:e4b",
+        alias="batchSummaryModel",
+    )
+    groq_base_url: str = Field(
+        default="https://api.groq.com/openai/v1",
+        alias="groqBaseUrl",
+    )
+    groq_reasoning_effort: Literal["default", "low", "medium", "high"] = Field(
+        default="low",
+        alias="groqReasoningEffort",
+    )
+    groq_service_tier: Literal["on_demand", "auto", "flex"] = Field(
+        default="on_demand",
+        alias="groqServiceTier",
+    )
     context_lines: int = Field(default=3, alias="contextLines", ge=1, le=20)
     context_before_lines: int = Field(
         default=3, alias="contextBeforeLines", ge=0, le=20
@@ -86,9 +107,21 @@ class PathSettings(BaseModel):
 
 class TranscriptionSettings(BaseModel):
     language: str = "ja"
+    realtime_transcription_engine: Literal["moonshine", "groq"] = Field(
+        default="moonshine",
+        alias="realtimeTranscriptionEngine",
+    )
     model_preset: str = Field(default="base", alias="modelPreset")
-    batch_transcription_engine: Literal["faster-whisper", "moonshine"] = Field(
+    groq_transcription_model: str = Field(
+        default="whisper-large-v3-turbo",
+        alias="groqTranscriptionModel",
+    )
+    batch_transcription_engine: Literal["faster-whisper", "moonshine", "groq"] = Field(
         default="faster-whisper", alias="batchTranscriptionEngine"
+    )
+    batch_groq_transcription_model: str = Field(
+        default="whisper-large-v3-turbo",
+        alias="batchGroqTranscriptionModel",
     )
     batch_moonshine_model_preset: str = Field(
         default="base", alias="batchMoonshineModelPreset"
@@ -145,13 +178,17 @@ class TranscriptSegment(BaseModel):
     speaker_label: str = Field(alias="speakerLabel")
     speaker_index: int = Field(alias="speakerIndex")
     speaker_source: Literal[
-        "moonshine", "faster-whisper", "feature-fallback", "carry-forward"
+        "moonshine", "faster-whisper", "groq", "feature-fallback", "carry-forward"
     ] = Field(alias="speakerSource")
     started_at: float = Field(alias="startedAt")
     duration: float
     is_complete: bool = Field(alias="isComplete")
     latency_ms: int = Field(alias="latencyMs")
     updated_at: str = Field(alias="updatedAt")
+    transcription_model: str | None = Field(
+        default=None,
+        alias="transcriptionModel",
+    )
     llm_text: str | None = Field(default=None, alias="llmText")
     llm_status: Literal["idle", "pending", "complete", "error"] = Field(
         default="idle", alias="llmStatus"
@@ -219,8 +256,17 @@ class MetaResponse(BaseModel):
     available_models_by_language: dict[str, list[str]] = Field(
         alias="availableModelsByLanguage"
     )
+    realtime_transcription_engines: list[str] = Field(
+        alias="realtimeTranscriptionEngines"
+    )
+    groq_transcription_models: list[str] = Field(alias="groqTranscriptionModels")
     batch_transcription_engines: list[str] = Field(alias="batchTranscriptionEngines")
     faster_whisper_models: list[str] = Field(alias="fasterWhisperModels")
+    llm_providers: list[str] = Field(alias="llmProviders")
+    ollama_llm_models: list[str] = Field(alias="ollamaLlmModels")
+    groq_llm_models: list[str] = Field(alias="groqLlmModels")
+    groq_reasoning_efforts: list[str] = Field(alias="groqReasoningEfforts")
+    groq_service_tiers: list[str] = Field(alias="groqServiceTiers")
     default_language: str = Field(alias="defaultLanguage")
     default_model_preset: str = Field(alias="defaultModelPreset")
 
@@ -229,7 +275,15 @@ class MetaResponse(BaseModel):
 
 class StartSessionPayload(BaseModel):
     language: str = "ja"
+    realtime_transcription_engine: Literal["moonshine", "groq"] = Field(
+        default="moonshine",
+        alias="realtimeTranscriptionEngine",
+    )
     model_preset: str = Field(default="base", alias="modelPreset")
+    groq_transcription_model: str = Field(
+        default="whisper-large-v3-turbo",
+        alias="groqTranscriptionModel",
+    )
     browser_sample_rate: int = Field(alias="browserSampleRate", ge=8000, le=96000)
     channels: int = Field(default=1, ge=1, le=2)
     device_label: str = Field(default="Default Microphone", alias="deviceLabel")

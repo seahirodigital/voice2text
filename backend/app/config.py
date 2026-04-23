@@ -21,8 +21,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "transcription": {
         "language": "ja",
+        "realtimeTranscriptionEngine": "moonshine",
         "modelPreset": "base",
+        "groqTranscriptionModel": "whisper-large-v3-turbo",
         "batchTranscriptionEngine": "faster-whisper",
+        "batchGroqTranscriptionModel": "whisper-large-v3-turbo",
         "batchMoonshineModelPreset": "base",
         "fasterWhisperModel": "small",
         "maxSpeakers": 3,
@@ -34,6 +37,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "providers": {
             "openai": {"apiKey": "", "model": ""},
             "anthropic": {"apiKey": "", "model": ""},
+            "groq": {"apiKey": "", "model": ""},
         },
     },
     "llm": {
@@ -41,6 +45,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "provider": "ollama",
         "baseUrl": "http://localhost:11434",
         "model": "gemma4:e2b",
+        "batchSummaryProvider": "ollama",
+        "batchSummaryModel": "gemma4:e4b",
+        "groqBaseUrl": "https://api.groq.com/openai/v1",
+        "groqReasoningEffort": "low",
+        "groqServiceTier": "on_demand",
         "contextLines": 3,
         "contextBeforeLines": 3,
         "contextAfterLines": 3,
@@ -82,7 +91,7 @@ def ensure_config_file() -> None:
 
 def load_settings() -> AppSettings:
     ensure_config_file()
-    loaded = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    loaded = json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig"))
     merged = _deep_merge(DEFAULT_CONFIG, loaded)
     return AppSettings.model_validate(merged)
 

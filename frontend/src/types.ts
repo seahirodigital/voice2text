@@ -1,6 +1,7 @@
 export type SpeakerSource =
   | "moonshine"
   | "faster-whisper"
+  | "groq"
   | "feature-fallback"
   | "carry-forward";
 
@@ -33,8 +34,11 @@ export interface AppSettings {
   };
   transcription: {
     language: string;
+    realtimeTranscriptionEngine: "moonshine" | "groq";
     modelPreset: string;
-    batchTranscriptionEngine: "faster-whisper" | "moonshine";
+    groqTranscriptionModel: string;
+    batchTranscriptionEngine: "faster-whisper" | "moonshine" | "groq";
+    batchGroqTranscriptionModel: string;
     batchMoonshineModelPreset: string;
     fasterWhisperModel: string;
     maxSpeakers: number;
@@ -46,13 +50,19 @@ export interface AppSettings {
     providers: {
       openai: ProviderConfig;
       anthropic: ProviderConfig;
+      groq: ProviderConfig;
     };
   };
   llm: {
     enabled: boolean;
-    provider: "ollama";
+    provider: "ollama" | "groq";
     baseUrl: string;
     model: string;
+    batchSummaryProvider: "ollama" | "groq";
+    batchSummaryModel: string;
+    groqBaseUrl: string;
+    groqReasoningEffort: "default" | "low" | "medium" | "high";
+    groqServiceTier: "on_demand" | "auto" | "flex";
     contextLines: number;
     contextBeforeLines: number;
     contextAfterLines: number;
@@ -95,6 +105,7 @@ export interface TranscriptSegment {
   isComplete: boolean;
   latencyMs: number;
   updatedAt: string;
+  transcriptionModel?: string | null;
   llmText?: string | null;
   llmStatus?: "idle" | "pending" | "complete" | "error";
   llmModel?: string | null;
@@ -132,8 +143,15 @@ export interface SessionDetail extends SessionSummary {
 export interface MetaResponse {
   supportedLanguages: string[];
   availableModelsByLanguage: Record<string, string[]>;
-  batchTranscriptionEngines: Array<"faster-whisper" | "moonshine">;
+  realtimeTranscriptionEngines: Array<"moonshine" | "groq">;
+  groqTranscriptionModels: string[];
+  batchTranscriptionEngines: Array<"faster-whisper" | "moonshine" | "groq">;
   fasterWhisperModels: string[];
+  llmProviders: Array<"ollama" | "groq">;
+  ollamaLlmModels: string[];
+  groqLlmModels: string[];
+  groqReasoningEfforts: Array<"default" | "low" | "medium" | "high">;
+  groqServiceTiers: Array<"on_demand" | "auto" | "flex">;
   defaultLanguage: string;
   defaultModelPreset: string;
 }
