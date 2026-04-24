@@ -282,17 +282,9 @@ class LiveTranscriptionSession:
             return
 
         self.recognition_stopped = True
-        pending_line_ids = set(self.llm_pending_line_ids)
         self._cancel_llm_tasks()
         self._cancel_groq_tasks()
-        for line_id in pending_line_ids:
-            segment = self.segments.get(line_id)
-            if segment is None:
-                continue
-            segment.llm_status = "idle"
-            segment.llm_error = None
-            segment.llm_updated_at = utc_now_iso()
-            self._publish_llm_segment("llm_refinement_updated", segment)
+        self._reset_pending_llm_segments(publish_updates=True)
 
         if self.transcriber is not None:
             self.transcriber.stop()
@@ -385,6 +377,10 @@ class LiveTranscriptionSession:
         if not self.active or self.context is None:
             return None
 
+        self._cancel_groq_tasks()
+        self._cancel_llm_tasks()
+        self._reset_pending_llm_segments(publish_updates=False)
+
         if self.transcriber is not None:
             self.transcriber.stop()
             self.transcriber.close()
@@ -439,9 +435,13 @@ class LiveTranscriptionSession:
         }
         self._put_nowait(payload)
         self.active = False
-        self._cancel_groq_tasks()
-        self._cancel_llm_tasks()
         return payload
+
+    async def finalize_after_transcription(self) -> dict | None:
+        if not self.active or self.context is None:
+            return None
+        await self._drain_groq_for_finalize()
+        return self.finalize()
 
     async def finalize_after_refinement(self) -> dict | None:
         if not self.active or self.context is None:
@@ -683,6 +683,16 @@ class LiveTranscriptionSession:
             future.cancel()
         self.llm_worker_future = None
         self._wake_llm_worker()
+
+    def _reset_pending_llm_segments(self, *, publish_updates: bool) -> None:
+        for segment in self.segments.values():
+            if segment.llm_status != "pending":
+                continue
+            segment.llm_status = "idle"
+            segment.llm_error = None
+            segment.llm_updated_at = utc_now_iso()
+            if publish_updates:
+                self._publish_llm_segment("llm_refinement_updated", segment)
 
     def _schedule_llm_refinement(self, line_id: int) -> None:
         settings = self.llm_settings

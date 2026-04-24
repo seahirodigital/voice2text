@@ -985,6 +985,50 @@ function isSecondBasedRateLimit(metric: string) {
   return /second|audio/i.test(metric);
 }
 
+function parseGroqResetSeconds(value: string | null | undefined) {
+  if (!value) {
+    return null;
+  }
+  const normalized = value.trim();
+  if (!normalized) {
+    return null;
+  }
+
+  let totalSeconds = 0;
+  let matched = false;
+  const minuteMatch = normalized.match(/(\d+(?:\.\d+)?)m/i);
+  if (minuteMatch) {
+    totalSeconds += Number(minuteMatch[1]) * 60;
+    matched = true;
+  }
+  const secondMatch = normalized.match(/(\d+(?:\.\d+)?)s/i);
+  if (secondMatch) {
+    totalSeconds += Number(secondMatch[1]);
+    matched = true;
+  }
+  if (matched) {
+    return Number.isFinite(totalSeconds) ? totalSeconds : null;
+  }
+
+  const fallback = Number(normalized.replace(/[^\d.]/g, ""));
+  return Number.isFinite(fallback) ? fallback : null;
+}
+
+function formatCountdownSeconds(seconds: number) {
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    return "0秒";
+  }
+  if (seconds < 10) {
+    return `${seconds.toFixed(1)}秒`;
+  }
+  if (seconds < 60) {
+    return `${Math.ceil(seconds)}秒`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  const restSeconds = Math.ceil(seconds % 60);
+  return restSeconds > 0 ? `${minutes}分${restSeconds}秒` : `${minutes}分`;
+}
+
 const GROQ_RATE_LIMIT_LABELS: Record<string, string> = {
   "remaining-requests": "残りリクエスト",
   "limit-requests": "上限リクエスト",
@@ -1000,6 +1044,7 @@ function GroqUsageMeter({
   remaining,
   limit,
   resetAt,
+  windowLabel,
   unit = "count",
 }: {
   label: string;
@@ -1007,19 +1052,41 @@ function GroqUsageMeter({
   remaining: number;
   limit: number;
   resetAt?: string | null;
+  windowLabel?: string | null;
   unit?: "count" | "seconds";
 }) {
+  const [now, setNow] = useState(() => Date.now());
   const safeLimit = Math.max(0, limit);
   const safeRemaining = Math.max(0, remaining);
   const safeUsed = Math.max(0, Math.min(safeLimit, used));
   const usagePercent =
     safeLimit > 0 ? clampNumber((safeUsed / safeLimit) * 100, 0, 100) : 0;
+  const resetSeconds = parseGroqResetSeconds(resetAt);
+  const [resetStartedAt, setResetStartedAt] = useState(() => Date.now());
+  const effectiveResetSeconds =
+    resetSeconds === null ? null : Math.max(0, resetSeconds - (now - resetStartedAt) / 1000);
+
+  useEffect(() => {
+    if (resetSeconds === null) {
+      return;
+    }
+    const startedAt = Date.now();
+    setResetStartedAt(startedAt);
+    setNow(startedAt);
+    const handle = window.setInterval(() => {
+      setNow(Date.now());
+    }, 1000);
+    return () => window.clearInterval(handle);
+  }, [resetSeconds]);
 
   return (
     <div className="rounded-md border border-white/10 bg-white/[0.04] p-3">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="text-[11px] font-semibold text-slate-300">{label}</p>
+          {windowLabel ? (
+            <p className="mt-1 text-[10px] text-slate-500">{windowLabel}</p>
+          ) : null}
           <p className="mt-1 text-sm font-semibold tabular-nums text-white">
             {formatUsageMeterValue(safeUsed, unit)} /{" "}
             {formatUsageMeterValue(safeLimit, unit)}
@@ -1029,8 +1096,10 @@ function GroqUsageMeter({
           <p className="text-[11px] font-semibold text-[#7ab8ff]">
             残り {formatUsageMeterValue(safeRemaining, unit)}
           </p>
-          {resetAt ? (
-            <p className="mt-1 text-[10px] text-slate-500">リセット {resetAt}</p>
+          {effectiveResetSeconds !== null ? (
+            <p className="mt-1 text-[10px] text-slate-500">
+              リセットまで {formatCountdownSeconds(effectiveResetSeconds)}
+            </p>
           ) : null}
         </div>
       </div>
@@ -1051,11 +1120,13 @@ function GroqUsageMeter({
 function GroqUsagePopover({
   usage,
   loading,
+  fetchedAt,
   onRefresh,
   onClose,
 }: {
   usage: GroqUsageResponse | null;
   loading: boolean;
+  fetchedAt: string | null;
   onRefresh: () => void;
   onClose: () => void;
 }) {
@@ -1079,6 +1150,7 @@ function GroqUsagePopover({
         used: Math.max(0, limit - remaining),
         resetAt: usage?.rateLimits?.[`reset-${metric}`] ?? null,
         unit: isSecondBasedRateLimit(metric) ? ("seconds" as const) : ("count" as const),
+        windowLabel: metric === "tokens" ? "1分あたりの上限" : metric === "requests" ? "1日あたりの上限" : null,
       };
     })
     .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
@@ -1097,6 +1169,11 @@ function GroqUsagePopover({
             {usage?.updatedAt
               ? `更新 ${new Date(usage.updatedAt).toLocaleString("ja-JP")}`
               : "まだ記録がありません"}
+          </p>
+          <p className="mt-1 text-[10px] text-slate-500">
+            {fetchedAt
+              ? `表示更新 ${new Date(fetchedAt).toLocaleTimeString("ja-JP")}`
+              : "保存済みの使用量を表示"}
           </p>
         </div>
         <button
@@ -1171,6 +1248,7 @@ function GroqUsagePopover({
                 limit={entry.limit}
                 resetAt={entry.resetAt}
                 unit={entry.unit}
+                windowLabel={entry.windowLabel}
               />
             ))}
           </div>
@@ -1287,6 +1365,7 @@ function App() {
   const [groqUsageLoading, setGroqUsageLoading] = useState(false);
   const [groqUsageHovered, setGroqUsageHovered] = useState(false);
   const [groqUsagePinned, setGroqUsagePinned] = useState(false);
+  const [groqUsageFetchedAt, setGroqUsageFetchedAt] = useState<string | null>(null);
   const [transcriptColumnWidths, setTranscriptColumnWidths] =
     useState<TranscriptColumnWidths>({
       ...DEFAULT_TRANSCRIPT_COLUMN_WIDTHS,
@@ -1329,6 +1408,7 @@ function App() {
   const minutesSplitRef = useRef<HTMLDivElement | null>(null);
   const promptImportInputRef = useRef<HTMLInputElement | null>(null);
   const speakerRenameInputRef = useRef<HTMLInputElement | null>(null);
+  const groqUsageContainerRef = useRef<HTMLDivElement | null>(null);
   const segmentRowRefs = useRef<Map<string, HTMLElement>>(new Map());
   const lastLiveSegmentIdRef = useRef<string | null>(null);
   const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
@@ -1408,6 +1488,60 @@ function App() {
 
   useEffect(() => {
     statusRef.current = status;
+  }, [status]);
+
+  useEffect(() => {
+    if (status !== "recording") {
+      return;
+    }
+
+    const resumeRecordingContext = () => {
+      const audioContext = audioContextRef.current;
+      if (!audioContext || statusRef.current !== "recording") {
+        return;
+      }
+      if (audioContext.state === "running" || audioContext.state === "closed") {
+        return;
+      }
+      void audioContext.resume().catch(() => {
+        // Browsers can reject resume while the page is backgrounded. We retry on focus.
+      });
+    };
+
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        resumeRecordingContext();
+      }
+    };
+
+    const handleWindowFocus = () => {
+      resumeRecordingContext();
+    };
+
+    const audioContext = audioContextRef.current;
+    const handleAudioContextStateChange = () => {
+      resumeRecordingContext();
+    };
+
+    const watchdog = window.setInterval(() => {
+      resumeRecordingContext();
+    }, 1000);
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("focus", handleWindowFocus);
+    window.addEventListener("pageshow", handleWindowFocus);
+    audioContext?.addEventListener?.("statechange", handleAudioContextStateChange);
+
+    return () => {
+      window.clearInterval(watchdog);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("focus", handleWindowFocus);
+      window.removeEventListener("pageshow", handleWindowFocus);
+      audioContext?.removeEventListener?.(
+        "statechange",
+        handleAudioContextStateChange,
+      );
+    };
   }, [status]);
 
   useEffect(() => {
@@ -1538,8 +1672,10 @@ function App() {
     try {
       const usage = await apiFetch<GroqUsageResponse>("/api/groq/usage");
       setGroqUsage(usage);
+      setGroqUsageFetchedAt(new Date().toISOString());
     } catch {
       setGroqUsage((current) => current);
+      setGroqUsageFetchedAt(new Date().toISOString());
     } finally {
       setGroqUsageLoading(false);
     }
@@ -1563,6 +1699,32 @@ function App() {
       window.clearInterval(handle);
     };
   }, [groqUsageHovered, groqUsagePinned, refreshGroqUsage]);
+
+  useEffect(() => {
+    if (!groqUsagePinned) {
+      return;
+    }
+
+    const handlePointerDown = (event: Event) => {
+      const target = event.target as Node | null;
+      if (!target) {
+        return;
+      }
+      if (groqUsageContainerRef.current?.contains(target)) {
+        return;
+      }
+      setGroqUsagePinned(false);
+      setGroqUsageHovered(false);
+    };
+
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("touchstart", handlePointerDown);
+
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("touchstart", handlePointerDown);
+    };
+  }, [groqUsagePinned]);
 
   const clearBootstrapRetry = () => {
     if (bootstrapRetryTimeoutRef.current !== null) {
@@ -3708,6 +3870,7 @@ function App() {
           </button>
         </div>
         <div
+          ref={groqUsageContainerRef}
           className="relative"
           onMouseEnter={() => {
             setGroqUsageHovered(true);
@@ -3718,12 +3881,8 @@ function App() {
           <button
             type="button"
             onClick={() => {
-              if (promptEditorOpen) {
-                closePromptEditor();
-              }
-              setGroqUsagePinned(true);
+              setGroqUsagePinned((current) => !current);
               void refreshGroqUsage();
-              setSettingsOpen(true);
             }}
             className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
               groqUsageHovered || groqUsagePinned
@@ -3746,6 +3905,7 @@ function App() {
                 <GroqUsagePopover
                   usage={groqUsage}
                   loading={groqUsageLoading}
+                  fetchedAt={groqUsageFetchedAt}
                   onRefresh={() => void refreshGroqUsage()}
                   onClose={() => {
                     setGroqUsagePinned(false);

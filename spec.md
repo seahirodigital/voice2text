@@ -20,10 +20,12 @@
 *   **OneDrive管理（ソースコード・設定）**:
     *   Reactソースコード、FastAPIロジック、UIデザイン資産。
     *   `config.json`（各環境のパス設定、Phase 2用のAPI設定）。
+    *   OneDrive 配下へ重量級の実体データを置かない。特に Ollama モデル、ログ、録音、キャッシュ、仮想環境は置かない。
 *   **ローカルストレージ分離（重量級ファイル）**:
-    *   **モデルファイル**: `models/`（Moonshineの学習済みモデル：数GB）。
+    *   **Moonshine / Faster Whisper モデル**: `%LOCALAPPDATA%\Voice2Text\...`（学習済みモデル：数GB）。
+    *   **Ollama モデル / ログ**: `%LOCALAPPDATA%\Voice2Text\ollama\...`。
     *   **実行環境**: `.venv/`, `node_modules/`（ライブラリ群）。
-    *   **音声データ**: `temp_recordings/`（録音されたwavファイル）。
+    *   **音声データ**: `%LOCALAPPDATA%\Voice2Text\temp_recordings`（録音されたwavファイル）。
 *   **デプロイ/移行**:
     *   `setup.bat` を同梱し、各PCのローカル環境へモデルのダウンロードと環境構築を自動で行う仕様。
 

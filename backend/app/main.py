@@ -332,7 +332,7 @@ async def transcription_socket(websocket: WebSocket):
             elif envelope.type == "stop_recognition":
                 session.stop_recognition()
             elif envelope.type == "stop_session":
-                await session.finalize_after_refinement()
+                await session.finalize_after_transcription()
             else:
                 await websocket.send_json(
                     {
