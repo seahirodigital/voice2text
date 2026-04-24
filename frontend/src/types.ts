@@ -156,6 +156,40 @@ export interface MetaResponse {
   defaultModelPreset: string;
 }
 
+export interface GroqUsageTotals {
+  requests: number;
+  successes: number;
+  errors: number;
+  rateLimitHits: number;
+  audioSeconds: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
+export interface GroqUsageLatest {
+  at: string;
+  endpoint: string;
+  model: string;
+  statusCode: number;
+  latencyMs: number;
+  audioSeconds: number;
+  tokens: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+  };
+}
+
+export interface GroqUsageResponse {
+  updatedAt: string | null;
+  todayKey: string;
+  today: GroqUsageTotals;
+  models: Record<string, GroqUsageTotals>;
+  latest: GroqUsageLatest | null;
+  rateLimits: Record<string, string>;
+}
+
 export interface SocketMessage {
   type: string;
   payload: Record<string, unknown>;

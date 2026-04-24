@@ -26,6 +26,7 @@ from app.services.minutes_service import (
 )
 from app.services.session_store import SessionStore
 from app.services.settings_service import SettingsService
+from app.services.groq_usage_store import get_groq_usage_snapshot
 
 settings_service = SettingsService()
 
@@ -107,6 +108,11 @@ async def write_settings(settings: AppSettings):
 @app.get("/api/meta")
 async def read_meta():
     return settings_service.get_meta()
+
+
+@app.get("/api/groq/usage")
+async def read_groq_usage():
+    return get_groq_usage_snapshot()
 
 
 @app.get("/api/sessions")

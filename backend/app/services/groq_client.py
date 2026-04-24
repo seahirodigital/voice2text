@@ -19,6 +19,7 @@ from app.services.ollama_client import (
     TIMELINE_BLOCK_PROMPT,
     RefinementResult,
 )
+from app.services.groq_usage_store import record_groq_api_call
 
 GROQ_API_KEY_ENV = "GROQ_API_KEY"
 DEFAULT_GROQ_BASE_URL = "https://api.groq.com/openai/v1"
@@ -196,18 +197,19 @@ class GroqClient:
         language: str,
         response_format: str = "json",
         timestamp_granularities: list[str] | None = None,
+        audio_seconds: float = 0.0,
         timeout_seconds: float = 120.0,
     ) -> GroqTranscriptionResult:
         started = time.perf_counter()
-        data: list[tuple[str, str]] = [
-            ("model", model),
-            ("response_format", response_format),
-            ("temperature", "0"),
-        ]
+        data: dict[str, Any] = {
+            "model": model,
+            "response_format": response_format,
+            "temperature": "0",
+        }
         if language:
-            data.append(("language", language))
-        for granularity in timestamp_granularities or []:
-            data.append(("timestamp_granularities[]", granularity))
+            data["language"] = language
+        if timestamp_granularities:
+            data["timestamp_granularities[]"] = list(timestamp_granularities)
 
         async with httpx.AsyncClient(timeout=timeout_seconds) as client:
             response = await client.post(
@@ -216,6 +218,16 @@ class GroqClient:
                 data=data,
                 files={"file": (filename, wav_bytes, "audio/wav")},
             )
+            latency_ms = int((time.perf_counter() - started) * 1000)
+            if response.status_code >= 400:
+                record_groq_api_call(
+                    endpoint="audio/transcriptions",
+                    model=model,
+                    status_code=response.status_code,
+                    latency_ms=latency_ms,
+                    headers=response.headers,
+                    audio_seconds=audio_seconds,
+                )
             response.raise_for_status()
 
         if response_format == "text":
@@ -225,9 +237,17 @@ class GroqClient:
             payload = response.json()
             text = payload.get("text") if isinstance(payload, dict) else ""
             segments = self._extract_transcription_segments(payload)
+        record_groq_api_call(
+            endpoint="audio/transcriptions",
+            model=model,
+            status_code=response.status_code,
+            latency_ms=latency_ms,
+            headers=response.headers,
+            audio_seconds=audio_seconds,
+        )
         return GroqTranscriptionResult(
             text=str(text or "").strip(),
-            latency_ms=int((time.perf_counter() - started) * 1000),
+            latency_ms=latency_ms,
             segments=segments,
         )
 
@@ -289,6 +309,8 @@ class GroqClient:
 
         data = await self._post_chat_payload(
             base_payload,
+            model=self.settings.model,
+            started=started,
             timeout_seconds=timeout_seconds,
         )
         text, finish_reason = self._extract_chat_text(data)
@@ -301,6 +323,8 @@ class GroqClient:
                 retry_payload["reasoning_effort"] = "low"
             data = await self._post_chat_payload(
                 retry_payload,
+                model=self.settings.model,
+                started=started,
                 timeout_seconds=timeout_seconds,
             )
             text, finish_reason = self._extract_chat_text(data)
@@ -320,6 +344,8 @@ class GroqClient:
         self,
         payload: dict[str, object],
         *,
+        model: str,
+        started: float,
         timeout_seconds: float,
     ) -> dict:
         async with httpx.AsyncClient(timeout=timeout_seconds) as client:
@@ -331,9 +357,27 @@ class GroqClient:
                 },
                 json=payload,
             )
+            latency_ms = int((time.perf_counter() - started) * 1000)
+            if response.status_code >= 400:
+                record_groq_api_call(
+                    endpoint="chat/completions",
+                    model=model,
+                    status_code=response.status_code,
+                    latency_ms=latency_ms,
+                    headers=response.headers,
+                )
             response.raise_for_status()
         data = response.json()
-        return data if isinstance(data, dict) else {}
+        normalized_data = data if isinstance(data, dict) else {}
+        record_groq_api_call(
+            endpoint="chat/completions",
+            model=model,
+            status_code=response.status_code,
+            latency_ms=latency_ms,
+            headers=response.headers,
+            usage=normalized_data.get("usage"),
+        )
+        return normalized_data
 
     @staticmethod
     def _extract_chat_text(data: dict) -> tuple[str, str | None]:

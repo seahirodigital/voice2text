@@ -234,6 +234,7 @@ async def _transcribe_groq_segments(
         language=transcription_settings.language,
         response_format="verbose_json",
         timestamp_granularities=["segment"],
+        audio_seconds=len(audio) / TARGET_RECORDING_SAMPLE_RATE,
         timeout_seconds=300.0,
     )
     return _groq_transcription_to_segments(

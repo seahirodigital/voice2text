@@ -623,6 +623,7 @@ class LiveTranscriptionSession:
                 filename=f"{self.context.session_id}-{self.groq_line_id}.wav",
                 model=self.context.groq_transcription_model,
                 language=self.context.language,
+                audio_seconds=len(frame_bytes) / bytes_per_second,
             )
         except asyncio.CancelledError:
             return

@@ -44,6 +44,7 @@ import { Button } from "./components/ui/button";
 import { transcriptToPlainText } from "./lib/utils";
 import type {
   AppSettings,
+  GroqUsageResponse,
   MetaResponse,
   PromptPreset,
   RecordingStatus,
@@ -139,10 +140,10 @@ const DEFAULT_TRANSCRIPT_COLUMN_WIDTHS = {
   llm: 400,
 } as const;
 const MIN_TRANSCRIPT_COLUMN_WIDTHS = {
-  speaker: 80,
-  time: 80,
-  transcript: 260,
-  llm: 220,
+  speaker: 72,
+  time: 88,
+  transcript: 180,
+  llm: 160,
 } as const;
 
 type TranscriptColumnKey = "speaker" | "time" | "transcript" | "llm";
@@ -926,6 +927,300 @@ function buildExportMarkdown(
   ].join("\n\n");
 }
 
+function formatCompactNumber(value: number | string | null | undefined) {
+  const numericValue =
+    typeof value === "number"
+      ? value
+      : Number(String(value ?? "").replace(/[^\d.-]/g, ""));
+  if (!Number.isFinite(numericValue)) {
+    return String(value ?? "-");
+  }
+  return new Intl.NumberFormat("ja-JP", {
+    maximumFractionDigits: numericValue >= 100 ? 0 : 1,
+  }).format(numericValue);
+}
+
+function formatUsageSeconds(seconds: number) {
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    return "0秒";
+  }
+  if (seconds < 60) {
+    return `${formatCompactNumber(seconds)}秒`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  const restSeconds = Math.round(seconds % 60);
+  return restSeconds > 0 ? `${minutes}分${restSeconds}秒` : `${minutes}分`;
+}
+
+function parseUsageLimitValue(value: number | string | null | undefined) {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+  const normalized = String(value ?? "").replace(/[^\d.-]/g, "");
+  if (!normalized) {
+    return null;
+  }
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function formatUsageMeterValue(
+  value: number,
+  unit: "count" | "seconds" = "count",
+) {
+  return unit === "seconds" ? formatUsageSeconds(value) : formatCompactNumber(value);
+}
+
+function formatGroqLimitMetric(metric: string) {
+  if (metric === "requests") {
+    return "リクエスト";
+  }
+  if (metric === "tokens") {
+    return "トークン";
+  }
+  return metric.replace(/-/g, " ");
+}
+
+function isSecondBasedRateLimit(metric: string) {
+  return /second|audio/i.test(metric);
+}
+
+const GROQ_RATE_LIMIT_LABELS: Record<string, string> = {
+  "remaining-requests": "残りリクエスト",
+  "limit-requests": "上限リクエスト",
+  "reset-requests": "リクエスト復帰",
+  "remaining-tokens": "残りトークン",
+  "limit-tokens": "上限トークン",
+  "reset-tokens": "トークン復帰",
+};
+
+function GroqUsageMeter({
+  label,
+  used,
+  remaining,
+  limit,
+  resetAt,
+  unit = "count",
+}: {
+  label: string;
+  used: number;
+  remaining: number;
+  limit: number;
+  resetAt?: string | null;
+  unit?: "count" | "seconds";
+}) {
+  const safeLimit = Math.max(0, limit);
+  const safeRemaining = Math.max(0, remaining);
+  const safeUsed = Math.max(0, Math.min(safeLimit, used));
+  const usagePercent =
+    safeLimit > 0 ? clampNumber((safeUsed / safeLimit) * 100, 0, 100) : 0;
+
+  return (
+    <div className="rounded-md border border-white/10 bg-white/[0.04] p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[11px] font-semibold text-slate-300">{label}</p>
+          <p className="mt-1 text-sm font-semibold tabular-nums text-white">
+            {formatUsageMeterValue(safeUsed, unit)} /{" "}
+            {formatUsageMeterValue(safeLimit, unit)}
+          </p>
+        </div>
+        <div className="shrink-0 text-right">
+          <p className="text-[11px] font-semibold text-[#7ab8ff]">
+            残り {formatUsageMeterValue(safeRemaining, unit)}
+          </p>
+          {resetAt ? (
+            <p className="mt-1 text-[10px] text-slate-500">リセット {resetAt}</p>
+          ) : null}
+        </div>
+      </div>
+      <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/10">
+        <div
+          className="h-full rounded-full bg-gradient-to-r from-[#0a84ff] to-[#64c3ff] transition-[width] duration-300"
+          style={{ width: `${usagePercent}%` }}
+        />
+      </div>
+      <div className="mt-2 flex items-center justify-between text-[10px] text-slate-500">
+        <span>{Math.round(usagePercent)}% 使用</span>
+        <span>{formatUsageMeterValue(safeRemaining, unit)} 残り</span>
+      </div>
+    </div>
+  );
+}
+
+function GroqUsagePopover({
+  usage,
+  loading,
+  onRefresh,
+  onClose,
+}: {
+  usage: GroqUsageResponse | null;
+  loading: boolean;
+  onRefresh: () => void;
+  onClose: () => void;
+}) {
+  const today = usage?.today;
+  const rateLimitEntries = Object.entries(usage?.rateLimits ?? {}).slice(0, 6);
+  const rateLimitMeters = Object.entries(usage?.rateLimits ?? {})
+    .filter(([key]) => key.startsWith("limit-"))
+    .map(([key, value]) => {
+      const metric = key.slice("limit-".length);
+      const limit = parseUsageLimitValue(value);
+      const remaining = parseUsageLimitValue(
+        usage?.rateLimits?.[`remaining-${metric}`] ?? null,
+      );
+      if (limit === null || remaining === null || limit <= 0) {
+        return null;
+      }
+      return {
+        metric,
+        limit,
+        remaining,
+        used: Math.max(0, limit - remaining),
+        resetAt: usage?.rateLimits?.[`reset-${metric}`] ?? null,
+        unit: isSecondBasedRateLimit(metric) ? ("seconds" as const) : ("count" as const),
+      };
+    })
+    .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+  const modelEntries = Object.entries(usage?.models ?? {})
+    .sort(([, left], [, right]) => right.requests - left.requests)
+    .slice(0, 3);
+
+  return (
+    <div className="w-[23rem] max-w-[calc(100vw-5rem)] rounded-lg border border-white/10 bg-[#111114] p-4 text-left text-white shadow-2xl">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-[#7ab8ff]">
+            Groq使用量
+          </p>
+          <p className="mt-1 text-xs text-slate-400">
+            {usage?.updatedAt
+              ? `更新 ${new Date(usage.updatedAt).toLocaleString("ja-JP")}`
+              : "まだ記録がありません"}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-white/10 hover:text-white"
+          aria-label="Groq使用量を閉じる"
+        >
+          <X className="size-3.5" />
+        </button>
+      </div>
+
+      <div className="mt-4">
+        <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-500">
+          今日の累計
+        </p>
+      </div>
+
+      <div className="mt-4 grid grid-cols-2 gap-2">
+        <div className="rounded-md bg-white/5 p-3">
+          <p className="text-[11px] font-semibold text-slate-400">今日のリクエスト</p>
+          <p className="mt-1 text-lg font-semibold tabular-nums">
+            {formatCompactNumber(today?.requests ?? 0)}
+          </p>
+        </div>
+        <div className="rounded-md bg-white/5 p-3">
+          <p className="text-[11px] font-semibold text-slate-400">今日の音声</p>
+          <p className="mt-1 text-lg font-semibold tabular-nums">
+            {formatUsageSeconds(today?.audioSeconds ?? 0)}
+          </p>
+        </div>
+        <div className="rounded-md bg-white/5 p-3">
+          <p className="text-[11px] font-semibold text-slate-400">今日のトークン</p>
+          <p className="mt-1 text-lg font-semibold tabular-nums">
+            {formatCompactNumber(today?.totalTokens ?? 0)}
+          </p>
+        </div>
+        <div className="rounded-md bg-white/5 p-3">
+          <p className="text-[11px] font-semibold text-slate-400">制限到達</p>
+          <p className="mt-1 text-lg font-semibold tabular-nums">
+            {formatCompactNumber(today?.rateLimitHits ?? 0)}
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-4 space-y-2">
+        <div className="flex items-center justify-between">
+          <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-500">
+            現在のGroq制限
+          </p>
+          <button
+            type="button"
+            onClick={onRefresh}
+            className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[11px] font-semibold text-[#7ab8ff] transition-colors hover:bg-white/10"
+          >
+            {loading ? (
+              <LoaderCircle className="size-3 animate-spin" />
+            ) : (
+              <RefreshCcw className="size-3" />
+            )}
+            更新
+          </button>
+        </div>
+        {rateLimitMeters.length > 0 ? (
+          <div className="space-y-2">
+            {rateLimitMeters.map((entry) => (
+              <GroqUsageMeter
+                key={entry.metric}
+                label={formatGroqLimitMetric(entry.metric)}
+                used={entry.used}
+                remaining={entry.remaining}
+                limit={entry.limit}
+                resetAt={entry.resetAt}
+                unit={entry.unit}
+              />
+            ))}
+          </div>
+        ) : rateLimitEntries.length > 0 ? (
+          <div className="space-y-1">
+            {rateLimitEntries.map(([key, value]) => (
+              <div
+                key={key}
+                className="flex items-center justify-between gap-3 text-xs text-slate-300"
+              >
+                <span>{GROQ_RATE_LIMIT_LABELS[key] ?? key}</span>
+                <span className="app-mono text-slate-100">{value}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-xs leading-5 text-slate-400">
+            Groq APIを呼び出すと、レスポンスヘッダーから残り制限がここに表示されます。
+          </p>
+        )}
+      </div>
+
+      {usage?.latest ? (
+        <div className="mt-4 rounded-md border border-white/10 p-3 text-xs text-slate-300">
+          <p className="font-semibold text-slate-100">直近の呼び出し</p>
+          <p className="mt-1">{usage.latest.model}</p>
+          <p className="mt-1 app-mono">
+            {usage.latest.endpoint} / {usage.latest.statusCode} /{" "}
+            {usage.latest.latencyMs}ms
+          </p>
+        </div>
+      ) : null}
+
+      {modelEntries.length > 0 ? (
+        <div className="mt-4 space-y-1">
+          <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-500">
+            Model
+          </p>
+          {modelEntries.map(([model, totals]) => (
+            <div key={model} className="flex items-center justify-between gap-3 text-xs">
+              <span className="truncate text-slate-300">{model}</span>
+              <span className="app-mono text-slate-100">{totals.requests}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function App() {
   const [settingsResponse, setSettingsResponse] = useState<SettingsResponse | null>(
     null,
@@ -988,6 +1283,10 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsHelpTopic, setSettingsHelpTopic] =
     useState<SettingsHelpTopic | null>(null);
+  const [groqUsage, setGroqUsage] = useState<GroqUsageResponse | null>(null);
+  const [groqUsageLoading, setGroqUsageLoading] = useState(false);
+  const [groqUsageHovered, setGroqUsageHovered] = useState(false);
+  const [groqUsagePinned, setGroqUsagePinned] = useState(false);
   const [transcriptColumnWidths, setTranscriptColumnWidths] =
     useState<TranscriptColumnWidths>({
       ...DEFAULT_TRANSCRIPT_COLUMN_WIDTHS,
@@ -1233,6 +1532,37 @@ function App() {
     });
     return sessions;
   };
+
+  const refreshGroqUsage = useCallback(async () => {
+    setGroqUsageLoading(true);
+    try {
+      const usage = await apiFetch<GroqUsageResponse>("/api/groq/usage");
+      setGroqUsage(usage);
+    } catch {
+      setGroqUsage((current) => current);
+    } finally {
+      setGroqUsageLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshGroqUsage();
+  }, [refreshGroqUsage]);
+
+  useEffect(() => {
+    if (!groqUsageHovered && !groqUsagePinned) {
+      return;
+    }
+
+    void refreshGroqUsage();
+    const handle = window.setInterval(() => {
+      void refreshGroqUsage();
+    }, 15000);
+
+    return () => {
+      window.clearInterval(handle);
+    };
+  }, [groqUsageHovered, groqUsagePinned, refreshGroqUsage]);
 
   const clearBootstrapRetry = () => {
     if (bootstrapRetryTimeoutRef.current !== null) {
@@ -2849,14 +3179,16 @@ function App() {
     ...(showRawTranscript ? (["transcript"] as const) : []),
     ...(showLlmRefined ? (["llm"] as const) : []),
   ];
-  const visibleTranscriptWidthTotal = visibleTranscriptColumns.reduce(
-    (total, column) => total + effectiveTranscriptColumnWidths[column],
-    0,
-  );
+  const flexibleTranscriptColumn = showLlmRefined
+    ? "llm"
+    : showRawTranscript
+      ? "transcript"
+      : null;
   const transcriptGridTemplate = visibleTranscriptColumns
-    .map(
-      (column) =>
-        `${(effectiveTranscriptColumnWidths[column] / visibleTranscriptWidthTotal) * 100}%`,
+    .map((column) =>
+      column === flexibleTranscriptColumn
+        ? `minmax(${effectiveTranscriptColumnWidths[column]}px, 1fr)`
+        : `${effectiveTranscriptColumnWidths[column]}px`,
     )
     .join(" ");
   const transcriptTableMinWidth =
@@ -3375,19 +3707,55 @@ function App() {
             <FileText className="size-5" />
           </button>
         </div>
-        <button
-          type="button"
-          onClick={() => {
-            if (promptEditorOpen) {
-              closePromptEditor();
-            }
-            setSettingsOpen(true);
+        <div
+          className="relative"
+          onMouseEnter={() => {
+            setGroqUsageHovered(true);
+            void refreshGroqUsage();
           }}
-          className="flex h-10 w-10 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-white/5 hover:text-white"
-          aria-label="Open settings"
+          onMouseLeave={() => setGroqUsageHovered(false)}
         >
-          <Settings2 className="size-5" />
-        </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (promptEditorOpen) {
+                closePromptEditor();
+              }
+              setGroqUsagePinned(true);
+              void refreshGroqUsage();
+              setSettingsOpen(true);
+            }}
+            className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
+              groqUsageHovered || groqUsagePinned
+                ? "bg-white/10 text-white"
+                : "text-slate-500 hover:bg-white/5 hover:text-white"
+            }`}
+            aria-label="設定とGroq使用量を開く"
+          >
+            <Settings2 className="size-5" />
+          </button>
+          <AnimatePresence>
+            {groqUsageHovered || groqUsagePinned ? (
+              <motion.div
+                initial={{ opacity: 0, x: -4, scale: 0.98 }}
+                animate={{ opacity: 1, x: 0, scale: 1 }}
+                exit={{ opacity: 0, x: -4, scale: 0.98 }}
+                transition={{ duration: 0.14, ease: "easeOut" }}
+                className="absolute bottom-0 left-12 z-[80]"
+              >
+                <GroqUsagePopover
+                  usage={groqUsage}
+                  loading={groqUsageLoading}
+                  onRefresh={() => void refreshGroqUsage()}
+                  onClose={() => {
+                    setGroqUsagePinned(false);
+                    setGroqUsageHovered(false);
+                  }}
+                />
+              </motion.div>
+            ) : null}
+          </AnimatePresence>
+        </div>
       </aside>
 
       <AnimatePresence>
@@ -4169,7 +4537,7 @@ function App() {
             </div>
           ) : (
           <div className="mx-auto w-full max-w-[1380px] pb-10">
-              <div className="min-w-full" style={{ minWidth: `${transcriptTableMinWidth}px` }}>
+              <div className="min-w-full pr-4" style={{ minWidth: `${transcriptTableMinWidth}px` }}>
                 <div
                   className="sticky top-0 z-30 hidden border-b border-slate-200 bg-white px-0 py-4 text-[10px] font-bold uppercase tracking-[0.24em] text-slate-400 shadow-[0_1px_0_rgba(226,232,240,1)] lg:grid lg:gap-4"
                   style={transcriptGridStyle}
@@ -4269,7 +4637,7 @@ function App() {
   </div>
 ) : null}
 {showLlmRefined ? (
-  <div className="min-w-0">
+  <div className="min-w-0 pr-4">
     <div className="flex items-center gap-2">
       <span>{"LLM\u6574\u5f62"}</span>
       <button
@@ -4354,7 +4722,7 @@ function App() {
                             style={transcriptGridStyle}
                           >
                             <div
-                              className="flex items-center justify-between gap-2 rounded-xl px-2 py-2 lg:block"
+                              className="flex min-w-0 items-center justify-between gap-2 rounded-xl px-2 py-2 lg:block"
                             >
                               <div className="flex items-center gap-1">
                                 <p
@@ -4385,7 +4753,7 @@ function App() {
                             </div>
 
                             <div
-                              className={`mt-1 rounded-xl px-2 py-2 app-mono text-[11px] text-slate-400 lg:mt-0 ${timePlaybackCellClass}`}
+                              className={`mt-1 min-w-0 rounded-xl px-2 py-2 app-mono text-[11px] text-slate-400 lg:mt-0 ${timePlaybackCellClass}`}
                             >
                               <div className="flex items-center gap-2">
                                 <p className="font-semibold text-slate-500">
@@ -4451,7 +4819,7 @@ function App() {
                             (segment.llmText ||
                               segment.llmStatus === "pending" ||
                               segment.llmStatus === "error") ? (
-                              <div className="mt-2 min-w-0 rounded-xl bg-slate-50 px-3 py-2 transition-all duration-300 lg:mt-0">
+                              <div className="mt-2 min-w-0 overflow-hidden rounded-xl bg-slate-50 px-3 py-2 pr-4 transition-all duration-300 lg:mt-0">
                                 {segment.llmStatus === "pending" ? (
                                   <p className="text-[11px] font-semibold text-slate-400">
                                     整形中...
@@ -4465,7 +4833,7 @@ function App() {
                                   </p>
                                 ) : (
                                   <p
-                                    className="whitespace-pre-wrap text-slate-900"
+                                    className="w-full min-w-0 max-w-full whitespace-pre-wrap break-words text-slate-900 [overflow-wrap:anywhere]"
                                     style={{
                                       fontSize: "11px",
                                       fontWeight: 600,
