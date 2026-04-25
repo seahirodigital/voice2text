@@ -5,8 +5,8 @@
 - 仕様書に従い、`frontend` は `React + Vite + Tailwind CSS`、`backend` は `FastAPI + WebSocket + Moonshine` で構成する。
 - 重い実行資産はリポジトリ外に逃がす前提で設計する。
   - モデル: `%LOCALAPPDATA%\\Voice2Text\\models`
-  - Ollama: `%LOCALAPPDATA%\\Voice2Text\\ollama\\models`
-  - Ollama logs: `%LOCALAPPDATA%\\Voice2Text\\ollama\\logs`
+  - Ollama: `%LOCALAPPDATA%\\ollama\\models`
+  - Ollama logs: `%LOCALAPPDATA%\\ollama\\logs`
   - 仮想環境: `%LOCALAPPDATA%\\Voice2Text\\backend-venv`
   - 一時録音: `%LOCALAPPDATA%\\Voice2Text\\temp_recordings`
 - OneDrive 配下にはソースコード、設定、軽量な永続データのみを置く。

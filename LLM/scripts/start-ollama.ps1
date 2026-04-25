@@ -10,11 +10,14 @@ $llmRoot = Join-Path $RepoRoot "LLM"
 $ollamaRoot = if ($env:VOICE2TEXT_OLLAMA_ROOT) {
   [Environment]::ExpandEnvironmentVariables($env:VOICE2TEXT_OLLAMA_ROOT)
 } else {
-  Join-Path $env:LOCALAPPDATA "Voice2Text\ollama"
+  Join-Path $env:LOCALAPPDATA "ollama"
 }
 $ollamaRoot = (New-Item -ItemType Directory -Force -Path $ollamaRoot).FullName
 $modelsRoot = Join-Path $ollamaRoot "models"
 $logsRoot = Join-Path $ollamaRoot "logs"
+$legacyAppOllamaRoot = Join-Path $env:LOCALAPPDATA "Voice2Text\ollama"
+$legacyAppModelsRoot = Join-Path $legacyAppOllamaRoot "models"
+$legacyAppLogsRoot = Join-Path $legacyAppOllamaRoot "logs"
 $legacyModelsRoot = Join-Path $llmRoot "models"
 $legacyLogsRoot = Join-Path $llmRoot "logs"
 $stdoutLog = Join-Path $logsRoot "ollama.log"
@@ -63,6 +66,8 @@ function Move-LegacyDirectory {
 
 Move-LegacyDirectory -LegacyPath $legacyModelsRoot -TargetPath $modelsRoot -Label "Ollama models"
 Move-LegacyDirectory -LegacyPath $legacyLogsRoot -TargetPath $logsRoot -Label "Ollama logs"
+Move-LegacyDirectory -LegacyPath $legacyAppModelsRoot -TargetPath $modelsRoot -Label "Ollama models"
+Move-LegacyDirectory -LegacyPath $legacyAppLogsRoot -TargetPath $logsRoot -Label "Ollama logs"
 
 [Environment]::SetEnvironmentVariable("OLLAMA_MODELS", $modelsRoot, "Process")
 [Environment]::SetEnvironmentVariable("OLLAMA_HOST", $ollamaHost, "Process")

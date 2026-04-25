@@ -23,7 +23,7 @@
     *   OneDrive 配下へ重量級の実体データを置かない。特に Ollama モデル、ログ、録音、キャッシュ、仮想環境は置かない。
 *   **ローカルストレージ分離（重量級ファイル）**:
     *   **Moonshine / Faster Whisper モデル**: `%LOCALAPPDATA%\Voice2Text\...`（学習済みモデル：数GB）。
-    *   **Ollama モデル / ログ**: `%LOCALAPPDATA%\Voice2Text\ollama\...`。
+    *   **Ollama モデル / ログ**: `%LOCALAPPDATA%\ollama\...`。
     *   **実行環境**: `.venv/`, `node_modules/`（ライブラリ群）。
     *   **音声データ**: `%LOCALAPPDATA%\Voice2Text\temp_recordings`（録音されたwavファイル）。
 *   **デプロイ/移行**:

@@ -4,7 +4,7 @@ setlocal
 set "ROOT=%~dp0"
 set "ROOT_NO_SLASH=%ROOT:~0,-1%"
 set "BACKEND_VENV=%LOCALAPPDATA%\Voice2Text\backend-venv"
-set "VOICE2TEXT_OLLAMA_ROOT=%LOCALAPPDATA%\Voice2Text\ollama"
+set "VOICE2TEXT_OLLAMA_ROOT=%LOCALAPPDATA%\ollama"
 set "FRONTEND_URL=http://127.0.0.1:5173"
 set "LOG_DIR=%LOCALAPPDATA%\Voice2Text\logs"
 set "BACKEND_LOG=%LOG_DIR%\backend.log"
