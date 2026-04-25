@@ -392,6 +392,24 @@ function buildSocketUrl() {
   return url.toString();
 }
 
+function toPortableWindowsPath(rawPath: string | null | undefined) {
+  if (!rawPath) {
+    return "";
+  }
+
+  let normalized = rawPath.replace(/\//g, "\\");
+  normalized = normalized.replace(
+    /^[A-Za-z]:\\Users\\[^\\]+\\AppData\\Local/i,
+    "%LOCALAPPDATA%",
+  );
+  normalized = normalized.replace(
+    /^[A-Za-z]:\\Users\\[^\\]+\\OneDrive/i,
+    "%USERPROFILE%\\OneDrive",
+  );
+  normalized = normalized.replace(/^[A-Za-z]:\\Users\\[^\\]+/i, "%USERPROFILE%");
+  return normalized;
+}
+
 async function apiFetch<T>(path: string, init?: RequestInit) {
   try {
     const response = await fetch(path, {
@@ -3970,8 +3988,12 @@ function App() {
               onClick={() => void chooseRecordingsRoot()}
               disabled={!draftSettings || hasActiveCapture || savingSettings}
               title={
-                settingsResponse?.resolvedPaths.tempRecordingsRoot ??
-                draftSettings?.paths.tempRecordingsRoot
+                toPortableWindowsPath(
+                  settingsResponse?.resolvedPaths.tempRecordingsRoot ??
+                    draftSettings?.paths.tempRecordingsRoot,
+                ) ||
+                (settingsResponse?.resolvedPaths.tempRecordingsRoot ??
+                  draftSettings?.paths.tempRecordingsRoot)
               }
               className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition-colors hover:border-slate-300 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
               aria-label="Choose recordings folder"
@@ -6171,20 +6193,50 @@ function App() {
                       </p>
                     </div>
                     <div className="space-y-2 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm leading-6 text-slate-600">
-                      <p>Config: {settingsResponse.resolvedPaths.configPath}</p>
-                      <p>Repo: {settingsResponse.resolvedPaths.repoRoot}</p>
-                      <p>Models: {settingsResponse.resolvedPaths.modelsRoot}</p>
+                      <p>
+                        Config:{" "}
+                        {toPortableWindowsPath(
+                          settingsResponse.resolvedPaths.configPath,
+                        )}
+                      </p>
+                      <p>
+                        Repo:{" "}
+                        {toPortableWindowsPath(settingsResponse.resolvedPaths.repoRoot)}
+                      </p>
+                      <p>
+                        Models:{" "}
+                        {toPortableWindowsPath(
+                          settingsResponse.resolvedPaths.modelsRoot,
+                        )}
+                      </p>
                       <p>
                         Faster Whisper:{" "}
-                        {settingsResponse.resolvedPaths.fasterWhisperModelsRoot}
+                        {toPortableWindowsPath(
+                          settingsResponse.resolvedPaths.fasterWhisperModelsRoot,
+                        )}
                       </p>
-                      <p>Data: {settingsResponse.resolvedPaths.dataRoot}</p>
-                      <p>Sessions: {settingsResponse.resolvedPaths.sessionsRoot}</p>
+                      <p>
+                        Data:{" "}
+                        {toPortableWindowsPath(settingsResponse.resolvedPaths.dataRoot)}
+                      </p>
+                      <p>
+                        Sessions:{" "}
+                        {toPortableWindowsPath(
+                          settingsResponse.resolvedPaths.sessionsRoot,
+                        )}
+                      </p>
                       <p>
                         Temp recordings:{" "}
-                        {settingsResponse.resolvedPaths.tempRecordingsRoot}
+                        {toPortableWindowsPath(
+                          settingsResponse.resolvedPaths.tempRecordingsRoot,
+                        )}
                       </p>
-                      <p>Frontend dist: {settingsResponse.resolvedPaths.frontendDist}</p>
+                      <p>
+                        Frontend dist:{" "}
+                        {toPortableWindowsPath(
+                          settingsResponse.resolvedPaths.frontendDist,
+                        )}
+                      </p>
                     </div>
                   </section>
                 ) : null}
