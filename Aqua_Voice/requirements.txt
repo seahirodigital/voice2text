@@ -1,0 +1,4 @@
+httpx==0.28.1
+numpy>=1.26,<2.1
+pynput==1.8.1
+sounddevice==0.5.3
